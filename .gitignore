@@ -40,9 +40,9 @@ wheels/
 .DS_Store
 Thumbs.db
 
-# Streamlit
-.streamlit/
+# Streamlit - ignore only secrets.toml
 .streamlit/secrets.toml
+!.streamlit/config.toml
 
 # Temp files
 *.tmp
