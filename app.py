@@ -89,10 +89,19 @@ with st.sidebar:
     # Backtest Parameters
     st.subheader("📈 Backtest Parameters")
     
+    # Generate all months from the data
+    stock_returns_data["Date"] = pd.to_datetime(stock_returns_data["Date"])
+    min_date = stock_returns_data["Date"].min()
+    max_date = stock_returns_data["Date"].max()
+    
+    # Create list of all month-end dates
+    all_months = pd.period_range(start=min_date, end=max_date, freq='M')
+    oos_options = [str(m) for m in all_months]
+    
     oos_start = st.selectbox(
         "Out-of-Sample Start",
-        options=["2020-01", "2021-01", "2022-01", "2023-01"],
-        index=0,
+        options=oos_options,
+        index=max(0, len(oos_options) - 60),  # Default to ~5 years ago from latest
         help="Start month for backtest"
     )
     
@@ -368,6 +377,44 @@ with tab2:
                 }),
                 use_container_width=True
             )
+            
+            st.divider()
+            
+            st.subheader("📊 Portfolio Composition at Each Rebalance")
+            
+            # Extract portfolio compositions
+            compositions = []
+            for date_str, log_entry in rebalance_log.items():
+                weights = log_entry.get("weights", {})
+                if isinstance(weights, dict) and weights:
+                    date_obj = log_entry.get("asof", date_str)
+                    comp_row = {"Date": date_obj}
+                    comp_row.update(weights)
+                    compositions.append(comp_row)
+            
+            if compositions:
+                comp_df = pd.DataFrame(compositions).set_index("Date")
+                comp_df = comp_df.fillna(0.0)
+                
+                # Display as a heatmap-style table
+                st.dataframe(
+                    comp_df.style.format("{:.4f}").highlight_max(axis=0, color='#90EE90'),
+                    use_container_width=True,
+                    height=400
+                )
+                
+                # Also show a stacked bar chart of portfolio weights over time
+                if len(comp_df) > 0:
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    comp_df.plot(kind='bar', stacked=True, ax=ax, width=0.8)
+                    ax.set_title("Portfolio Weight Composition Over Rebalances")
+                    ax.set_xlabel("Rebalance Date")
+                    ax.set_ylabel("Weight")
+                    ax.legend(title="Stock", bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
+                    ax.axhline(y=1.0, color='red', linestyle='--', linewidth=1, label='100%')
+                    plt.xticks(rotation=45)
+                    plt.tight_layout()
+                    st.pyplot(fig, use_container_width=True)
 
 # ============================================================================
 # TAB 3: RISK ANALYSIS
