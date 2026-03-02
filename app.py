@@ -304,14 +304,14 @@ with tab2:
         
         with col1:
             st.metric(
-                "Strategy Final Value",
+                "Customized Portfolio Final Value",
                 f"${final_strategy:,.0f}",
                 f"{strategy_return:+.2f}%"
             )
         
         with col2:
             st.metric(
-                "Index Final Value",
+                "Nifty 50 Final Value",
                 f"${final_index:,.0f}",
                 f"{index_return:+.2f}%"
             )
@@ -319,7 +319,7 @@ with tab2:
         with col3:
             outperformance = ((final_strategy - final_index) / final_index) * 100
             st.metric(
-                "Outperformance",
+                "Outperformance vs Nifty 50",
                 f"{outperformance:+.2f}%",
                 f"${final_strategy - final_index:+,.0f}"
             )
@@ -329,7 +329,7 @@ with tab2:
             st.metric(
                 "Annual Volatility",
                 f"{annual_vol_strategy:.2%}",
-                "Strategy"
+                "Customized Portfolio"
             )
         
         st.divider()
@@ -338,8 +338,8 @@ with tab2:
         st.subheader("📈 Portfolio Value Over Time")
         
         fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(strategy_value.index, strategy_value.values, label="Strategy", linewidth=2, color="#1f77b4")
-        ax.plot(index_value.index, index_value.values, label="Index", linewidth=2, color="#ff7f0e")
+        ax.plot(strategy_value.index, strategy_value.values, label="Customized Portfolio", linewidth=2, color="#1f77b4")
+        ax.plot(index_value.index, index_value.values, label="Nifty 50", linewidth=2, color="#ff7f0e")
         ax.set_xlabel("Date")
         ax.set_ylabel("Portfolio Value ($)")
         ax.set_title("Strategy vs Index Performance")
@@ -354,8 +354,8 @@ with tab2:
         index_monthly = index_value.pct_change()
         
         fig, ax = plt.subplots(figsize=(12, 4))
-        ax.bar(range(len(strategy_monthly)), strategy_monthly.values, label="Strategy", alpha=0.7, color="#1f77b4")
-        ax.bar(range(len(index_monthly)), index_monthly.values, label="Index", alpha=0.7, color="#ff7f0e")
+        ax.bar(range(len(strategy_monthly)), strategy_monthly.values, label="Customized Portfolio", alpha=0.7, color="#1f77b4")
+        ax.bar(range(len(index_monthly)), index_monthly.values, label="Nifty 50", alpha=0.7, color="#ff7f0e")
         ax.set_xlabel("Month")
         ax.set_ylabel("Return")
         ax.set_title("Monthly Returns Comparison")
@@ -537,7 +537,7 @@ with tab3:
             
             ax.set_xlabel("Date")
             ax.set_ylabel("Portfolio Value ($)")
-            ax.set_title("Strategy Performance Across Risk Aversion Levels")
+            ax.set_title("Customized Portfolio Performance Across Risk Aversion Levels")
             ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
             ax.grid(True, alpha=0.3)
             st.pyplot(fig, use_container_width=True)

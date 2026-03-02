@@ -1391,8 +1391,8 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
 
     # Plot
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(strat_value.index, strat_value.values, label="Strategy")
-    ax.plot(bench_value.index, bench_value.values, label="Index")
+    ax.plot(strat_value.index, strat_value.values, label="Customized Portfolio")
+    ax.plot(bench_value.index, bench_value.values, label="Nifty 50")
     ax.set_title("OOS Backtest: Strategy vs Index (Value)")
     ax.set_ylabel("Portfolio Value ($)")
     ax.grid(True)
