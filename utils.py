@@ -1258,8 +1258,8 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
 
     for i, m in enumerate(pbar, start=1):
         # <<< ADDED >>> postfix updates
-        if show_progress and (i #% max(1, progress_every) == 0):
-            postfix = {"month": m.strftime("#%Y-#%m")}
+        if show_progress and (i % max(1, progress_every) == 0):
+            postfix = {"month": m.strftime("%Y-%m")}
             if show_timing:
                 elapsed = time.time() - t0
                 rate = elapsed / max(1, i)
