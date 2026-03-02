@@ -380,41 +380,65 @@ with tab2:
             
             st.divider()
             
-            st.subheader("📊 Portfolio Composition at Each Rebalance")
+            st.subheader("📊 Portfolio Composition at Each Quarter")
             
-            # Extract portfolio compositions
-            compositions = []
+            # Extract portfolio compositions from rebalance log
+            compositions = {}
             for date_str, log_entry in rebalance_log.items():
                 weights = log_entry.get("weights", {})
-                if isinstance(weights, dict) and weights:
-                    date_obj = log_entry.get("asof", date_str)
-                    comp_row = {"Date": date_obj}
-                    comp_row.update(weights)
-                    compositions.append(comp_row)
+                asof_date = log_entry.get("asof", pd.to_datetime(date_str))
+                
+                # Convert weights to dict if it's a Series
+                if isinstance(weights, pd.Series):
+                    weights = weights.to_dict()
+                
+                if weights:  # Only process if weights is not empty
+                    # Create quarter label (e.g., "2022-Q4") or use date format (e.g., "2022/09")
+                    if isinstance(asof_date, str):
+                        asof_date = pd.to_datetime(asof_date)
+                    quarter_label = f"{asof_date.year}/{asof_date.month:02d}"
+                    compositions[quarter_label] = weights
             
             if compositions:
-                comp_df = pd.DataFrame(compositions).set_index("Date")
+                # Build composition dataframe
+                comp_df = pd.DataFrame.from_dict(compositions, orient='index')
                 comp_df = comp_df.fillna(0.0)
                 
-                # Display as a heatmap-style table
+                # Convert to percentages
+                comp_df_pct = (comp_df * 100).round(2)
+                
+                # Display table with better formatting
+                st.write("**Weights (%) at each rebalancing date:**")
                 st.dataframe(
-                    comp_df.style.format("{:.4f}").highlight_max(axis=0, color='#90EE90'),
+                    comp_df_pct.style
+                        .format("{:.2f}")
+                        .highlight_max(axis=1, color='#FFE5B4')
+                        .highlight_min(axis=1, color='#E8F5E9'),
                     use_container_width=True,
-                    height=400
+                    height=500
                 )
                 
-                # Also show a stacked bar chart of portfolio weights over time
-                if len(comp_df) > 0:
-                    fig, ax = plt.subplots(figsize=(12, 6))
-                    comp_df.plot(kind='bar', stacked=True, ax=ax, width=0.8)
-                    ax.set_title("Portfolio Weight Composition Over Rebalances")
-                    ax.set_xlabel("Rebalance Date")
-                    ax.set_ylabel("Weight")
-                    ax.legend(title="Stock", bbox_to_anchor=(1.05, 1), loc='upper left', ncol=1)
-                    ax.axhline(y=1.0, color='red', linestyle='--', linewidth=1, label='100%')
-                    plt.xticks(rotation=45)
-                    plt.tight_layout()
-                    st.pyplot(fig, use_container_width=True)
+                # Show summary: top stocks overall
+                st.write("**Average position size across all periods:**")
+                avg_weights = comp_df.mean().sort_values(ascending=False) * 100
+                avg_weights = avg_weights[avg_weights > 0.1]  # Only show stocks with avg weight > 0.1%
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.dataframe(
+                        avg_weights.to_frame("Avg Weight (%)").style.format("{:.2f}"),
+                        use_container_width=True
+                    )
+                
+                with col2:
+                    # Pie chart of average allocation
+                    if len(avg_weights) > 0:
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        ax.pie(avg_weights, labels=avg_weights.index, autopct='%1.1f%%', startangle=90)
+                        ax.set_title("Average Portfolio Allocation")
+                        st.pyplot(fig, use_container_width=True)
+            else:
+                st.info("⚠️ No rebalancing occurred during this backtest period")
 
 # ============================================================================
 # TAB 3: RISK ANALYSIS
