@@ -204,34 +204,47 @@ with tab1:
         st.session_state.backtest_running = True
         
         # Import notebook functions - try multiple approaches
+        backtest_func = None
+        import_error = None
+        
         try:
             # Try direct import from utils
             from utils import backtest_fixed_window_quarterly_rebalance_on_breach
-        except ImportError:
+            backtest_func = backtest_fixed_window_quarterly_rebalance_on_breach
+        except (ImportError, ModuleNotFoundError, SyntaxError) as e:
+            import_error = str(e)
             try:
                 # Try importing from notebook context (if running in Jupyter kernel)
                 from model import backtest_fixed_window_quarterly_rebalance_on_breach
-            except ImportError:
-                st.error("""
-                ❌ Cannot import backtest functions. Please do one of the following:
-                
-                **Option 1: Create utils.py from notebook**
-                1. Open your Jupyter notebook (model.ipynb)
-                2. Extract all function definitions (cells with core functions)
-                3. Save as `utils.py` in the same directory
-                
-                **Option 2: Run notebook first**
-                1. Execute all cells in model.ipynb to define functions in Python kernel
-                2. Keep the kernel running
-                3. Then run Streamlit in the same Python environment
-                
-                See DEPLOYMENT_GUIDE.md for detailed instructions.
-                """)
-                st.stop()
+                backtest_func = backtest_fixed_window_quarterly_rebalance_on_breach
+            except (ImportError, ModuleNotFoundError, SyntaxError) as e2:
+                import_error = str(e2)
+        
+        if backtest_func is None:
+            st.error(f"""
+            ❌ Cannot import backtest functions.
+            
+            **Error Details**: {import_error}
+            
+            **This is expected on first Streamlit Cloud deployment.**
+            
+            To fix this:
+            
+            1. Reload the app page (F5)
+            2. Try the backtest again
+            
+            If error persists, the issue is with the utils.py file. Check:
+            - All required dependencies are installed
+            - No syntax errors in utils.py
+            - File is in the correct directory
+            
+            See DEPLOYMENT_GUIDE.md for detailed troubleshooting.
+            """)
+            st.stop()
         
         with st.spinner(f"⏳ Running backtest from {oos_start}..."):
             try:
-                backtest_result = backtest_fixed_window_quarterly_rebalance_on_breach(
+                backtest_result = backtest_func(
                     stock_returns_data=stock_returns_data,
                     fama_french_data=fama_french_data,
                     index_returns=index_returns_data,
@@ -375,14 +388,23 @@ with tab3:
     num_scenarios = st.slider("Number of Scenarios", 2, 20, 5, step=1)
     
     if st.button("🔄 Run Risk Sensitivity Analysis", use_container_width=True, type="primary"):
+        backtest_func = None
+        import_error = None
+        
         try:
             from utils import backtest_fixed_window_quarterly_rebalance_on_breach
-        except ImportError:
+            backtest_func = backtest_fixed_window_quarterly_rebalance_on_breach
+        except (ImportError, ModuleNotFoundError, SyntaxError) as e:
+            import_error = str(e)
             try:
                 from model import backtest_fixed_window_quarterly_rebalance_on_breach
-            except ImportError:
-                st.error("Cannot import backtest functions. See Run Backtest tab for instructions.")
-                st.stop()
+                backtest_func = backtest_fixed_window_quarterly_rebalance_on_breach
+            except (ImportError, ModuleNotFoundError, SyntaxError) as e2:
+                import_error = str(e2)
+        
+        if backtest_func is None:
+            st.error(f"Cannot import backtest functions. Error: {import_error}")
+            st.stop()
         
         risk_aversion_values = np.linspace(min_ra, max_ra, num_scenarios)
         sensitivity_results = {}
@@ -394,7 +416,7 @@ with tab3:
             status_text.text(f"Running scenario {i+1}/{num_scenarios} (Risk Aversion={ra:.2f})...")
             
             try:
-                bt_temp = backtest_fixed_window_quarterly_rebalance_on_breach(
+                bt_temp = backtest_func(
                     stock_returns_data=stock_returns_data,
                     fama_french_data=fama_french_data,
                     index_returns=index_returns_data,
