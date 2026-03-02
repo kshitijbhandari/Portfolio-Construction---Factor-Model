@@ -29,18 +29,33 @@ st.markdown("---")
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # Data loading
+    # Data loading - Auto-detect path
     st.subheader("📁 Data Files")
-    data_dir = st.text_input(
-        "Data Directory",
-        value="c:\\Users\\kshit\\Personal_Factor_model",
-        help="Path where CSV files are located"
-    )
+    
+    # Auto-detect if running locally or on cloud
+    default_data_dir = "."  # Use current directory
+    if os.path.exists("nifty_stocks_data (1).csv"):
+        data_dir = "."
+        st.info("✅ Using local data files")
+    else:
+        # Try absolute path (local machine)
+        if os.path.exists("c:\\Users\\kshit\\Personal_Factor_model\\nifty_stocks_data (1).csv"):
+            data_dir = "c:\\Users\\kshit\\Personal_Factor_model"
+            st.info("✅ Using local absolute path")
+        else:
+            data_dir = st.text_input(
+                "Data Directory (if auto-detect failed)",
+                value=".",
+                help="Path where CSV files are located"
+            )
     
     try:
-        # Load data
+        # Load data with proper path handling
         @st.cache_data
         def load_data(data_dir):
+            # Normalize path
+            data_dir = os.path.normpath(data_dir)
+            
             stock_returns = pd.read_csv(os.path.join(data_dir, 'nifty_stocks_data (1).csv'))
             index_returns = pd.read_csv(os.path.join(data_dir, 'nifty50_index_data.csv'))
             fama_french = pd.read_csv(os.path.join(data_dir, 'FF_Nifty50.csv'))
@@ -50,6 +65,21 @@ with st.sidebar:
         stock_returns_data, index_returns_data, fama_french_data, yearly_tickers_data = load_data(data_dir)
         st.success("✅ Data loaded successfully")
         
+    except FileNotFoundError as e:
+        st.error(f"""
+        ❌ Error loading data: {str(e)}
+        
+        **Data files not found at**: {data_dir}
+        
+        **Required files:**
+        - nifty_stocks_data (1).csv
+        - nifty50_index_data.csv
+        - FF_Nifty50.csv
+        - Nifty_50.csv
+        
+        Make sure all CSV files are in the same directory as this app.
+        """)
+        st.stop()
     except Exception as e:
         st.error(f"❌ Error loading data: {str(e)}")
         st.stop()
