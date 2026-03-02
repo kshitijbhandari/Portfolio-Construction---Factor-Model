@@ -6,6 +6,8 @@ import numpy as np
 import pulp
 from scipy import stats
 import warnings
+import time
+from tqdm.auto import tqdm
 warnings.filterwarnings('ignore')
 
 import numpy as np
