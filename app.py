@@ -33,19 +33,19 @@ with st.sidebar:
     st.subheader("📁 Data Files")
     
     # Auto-detect if running locally or on cloud
-    default_data_dir = "."  # Use current directory
-    if os.path.exists("nifty_stocks_data (1).csv"):
-        data_dir = "."
+    default_data_dir = "data"  # Use data directory
+    if os.path.exists("data/nifty_stocks_data (1).csv"):
+        data_dir = "data"
         st.info("✅ Using local data files")
     else:
         # Try absolute path (local machine)
-        if os.path.exists("c:\\Users\\kshit\\Personal_Factor_model\\nifty_stocks_data (1).csv"):
-            data_dir = "c:\\Users\\kshit\\Personal_Factor_model"
+        if os.path.exists("c:\\Users\\kshit\\Personal_Factor_model\\data\\nifty_stocks_data (1).csv"):
+            data_dir = "c:\\Users\\kshit\\Personal_Factor_model\\data"
             st.info("✅ Using local absolute path")
         else:
             data_dir = st.text_input(
                 "Data Directory (if auto-detect failed)",
-                value=".",
+                value="data",
                 help="Path where CSV files are located"
             )
     
