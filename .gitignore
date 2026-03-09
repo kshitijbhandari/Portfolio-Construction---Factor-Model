@@ -52,3 +52,6 @@ Thumbs.db
 # Local data processing
 temp/
 cache/
+
+# Generated reports
+Factor_Model_Report.docx
