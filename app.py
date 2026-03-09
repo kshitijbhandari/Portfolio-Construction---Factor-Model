@@ -173,6 +173,26 @@ with st.sidebar:
     
     st.divider()
     
+    st.divider()
+
+    # Turnover Cap
+    st.subheader("🔁 Turnover Constraint")
+    use_turnover_cap = st.checkbox(
+        "Enable Turnover Cap",
+        value=False,
+        help="Limit total portfolio turnover per rebalance"
+    )
+    if use_turnover_cap:
+        turnover_cap = st.slider(
+            "Turnover Cap (fraction of portfolio)",
+            min_value=0.05, max_value=1.0, value=0.30, step=0.05,
+            help="Max sum of |w_new - w_old| per rebalance (e.g. 0.30 = 30% turnover)"
+        )
+    else:
+        turnover_cap = None
+
+    st.divider()
+
     initial_capital = st.number_input(
         "Initial Capital ($)",
         min_value=10000, max_value=10000000, value=100000, step=10000,
@@ -199,6 +219,7 @@ with tab1:
         - Lookback: {lookback_months} months
         - Rebalance: Every {rebalance_every} months
         - Portfolio Size: {K_max} stocks, max {w_max*100:.0f}% per position
+        - Turnover Cap: {f"{turnover_cap*100:.0f}%" if turnover_cap is not None else "None (unconstrained)"}
         """)
     
     with col2:
@@ -270,7 +291,7 @@ with tab1:
                     w_max=w_max,
                     target_betas=target_betas,
                     beta_tolerances=beta_tolerances,
-                    turnover_cap=None,
+                    turnover_cap=turnover_cap,
                     show_progress=True
                 )
                 
@@ -504,7 +525,7 @@ with tab3:
                     w_max=w_max,
                     target_betas=target_betas,
                     beta_tolerances=beta_tolerances,
-                    turnover_cap=None,
+                    turnover_cap=turnover_cap,
                     show_progress=False
                 )
                 
