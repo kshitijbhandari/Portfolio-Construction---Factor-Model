@@ -202,7 +202,7 @@ with st.sidebar:
 # ============================================================================
 # MAIN TAB INTERFACE
 # ============================================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Run Backtest", "📈 Results", "🔍 Risk Analysis", "📐 Beta Explorer", "ℹ️ Info"])
+tab4, tab1, tab2, tab3, tab5 = st.tabs(["📐 Beta Explorer", "📊 Run Backtest", "📈 Results", "🔍 Risk Analysis", "ℹ️ Info"])
 
 # ============================================================================
 # TAB 1: RUN BACKTEST
@@ -591,48 +591,71 @@ with tab4:
     st.header("Beta Explorer")
     st.markdown("Understand the factor landscape **before** committing to target betas.")
 
-    # ── Section 1: Rolling Factor Trend ─────────────────────────────────────
-    st.subheader("📈 Factor Trend — Rolling 12-month Cumulative Return")
-    st.caption("Shows recent momentum of each factor. Rising line = factor has been rewarding lately.")
+    # ── Section 1: Factor Monthly Values (3 separate windows) ───────────────
+    st.subheader("📈 Factor Monthly Returns over Lookback Window")
+    st.caption("Each panel shows the actual monthly factor value over the selected lookback period.")
 
     try:
         ff_plot = fama_french_data.copy()
         ff_plot["Date"] = pd.to_datetime(ff_plot["Date"])
         ff_plot = ff_plot.sort_values("Date").set_index("Date")
 
-        # Keep only factor columns that exist
         factor_cols_avail = [c for c in ["MF", "SMB", "HML"] if c in ff_plot.columns]
 
-        # Restrict to lookback window ending at oos_start
         oos_dt = pd.Period(oos_start, "M").to_timestamp(how="end")
         lb_dt  = oos_dt - pd.DateOffset(months=lookback_months)
-        ff_window = ff_plot.loc[lb_dt:oos_dt, factor_cols_avail]
+        ff_window = ff_plot.loc[lb_dt:oos_dt, factor_cols_avail].copy()
+        ff_window.index = ff_window.index.to_period("M")  # month labels on x-axis
 
-        # Rolling 12-month cumulative return (product of 1+r)
-        roll_cum = (1 + ff_window).rolling(12).apply(lambda x: x.prod() - 1, raw=True)
-        roll_cum = roll_cum.dropna()
+        colors_map  = {"MF": "#1f77b4", "SMB": "#2ca02c", "HML": "#d62728"}
+        factor_full = {"MF": "Market (MF)", "SMB": "Size (SMB)", "HML": "Value (HML)"}
 
-        fig_trend, ax_trend = plt.subplots(figsize=(12, 4))
-        colors_map = {"MF": "#1f77b4", "SMB": "#2ca02c", "HML": "#d62728"}
-        for col in factor_cols_avail:
-            ax_trend.plot(roll_cum.index, roll_cum[col] * 100,
-                          label=col, linewidth=2, color=colors_map.get(col))
-        ax_trend.axhline(0, color="black", linewidth=0.8, linestyle="--")
-        ax_trend.set_ylabel("12-month rolling return (%)")
-        ax_trend.set_xlabel("Date")
-        ax_trend.set_title(f"Factor Momentum over Lookback Window  ({lb_dt.strftime('%Y-%m')} → {oos_dt.strftime('%Y-%m')})")
-        ax_trend.legend()
-        ax_trend.grid(True, alpha=0.3)
-        ax_trend.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
+        fig_trend, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+
+        for ax, col in zip(axes, factor_cols_avail):
+            series = ff_window[col] * 100          # convert to %
+            color  = colors_map[col]
+
+            # colour bars green/red by sign
+            bar_colors = [color if v >= 0 else "#cc0000" for v in series.values]
+            ax.bar(range(len(series)), series.values, color=bar_colors, alpha=0.7, width=0.8)
+
+            # rolling 3-month average line
+            roll3 = series.rolling(3).mean()
+            ax.plot(range(len(series)), roll3.values,
+                    color="black", linewidth=1.2, linestyle="--", label="3m avg")
+
+            ax.axhline(0, color="black", linewidth=0.6)
+            ax.set_ylabel(f"{col} (%)", fontsize=10)
+            ax.set_title(factor_full.get(col, col), fontsize=10, fontweight="bold", pad=3)
+            ax.grid(True, alpha=0.25, axis="y")
+            ax.legend(fontsize=8, loc="upper right")
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+
+        # x-axis: show every ~6th month label to avoid crowding
+        n = len(ff_window)
+        step = max(1, n // 12)
+        tick_pos    = list(range(0, n, step))
+        tick_labels = [str(ff_window.index[i]) for i in tick_pos]
+        axes[-1].set_xticks(tick_pos)
+        axes[-1].set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=8)
+        axes[-1].set_xlabel("Month")
+
+        fig_trend.suptitle(
+            f"Factor Monthly Returns  ({lb_dt.strftime('%Y-%m')} → {oos_dt.strftime('%Y-%m')})",
+            fontsize=12, fontweight="bold"
+        )
+        fig_trend.tight_layout()
         st.pyplot(fig_trend, use_container_width=True)
 
         # Quick stats table
         st.caption("**Factor statistics over selected lookback window:**")
         stats_df = pd.DataFrame({
-            "Ann. Mean (%)":  (ff_window.mean() * 12 * 100).round(2),
-            "Ann. Vol (%)":   (ff_window.std() * np.sqrt(12) * 100).round(2),
+            "Ann. Mean (%)":  (ff_window.mean() * 12).round(2),
+            "Ann. Vol (%)":   (ff_window.std() * np.sqrt(12)).round(2),
             "Sharpe":         ((ff_window.mean() / ff_window.std()) * np.sqrt(12)).round(3),
-            "Last 12m (%)":   (roll_cum.iloc[-1] * 100).round(2) if len(roll_cum) else np.nan,
+            "Min month (%)":  ff_window.min().round(2),
+            "Max month (%)":  ff_window.max().round(2),
         })
         st.dataframe(stats_df, use_container_width=True)
 
