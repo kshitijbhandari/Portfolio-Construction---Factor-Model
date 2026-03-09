@@ -650,8 +650,7 @@ with tab4:
         with st.spinner("Estimating betas and computing ranges (MILP)..."):
             try:
                 from utils import (estimate_betas_asof_nifty,
-                                   compute_achievable_beta_bounds,
-                                   get_factor_window_asof)
+                                   compute_achievable_beta_bounds)
 
                 year_sel = pd.Period(oos_start, "M").to_timestamp().year
                 tickers_sel = (
@@ -669,15 +668,7 @@ with tab4:
                     use_t_as_last_obs= False,
                 )
 
-                # Need R for compute_achievable_beta_bounds
-                _, R_sel = get_factor_window_asof(
-                    stock_returns_data, fama_french_data, oos_start,
-                    lookback_months, tickers_sel
-                ) if hasattr(
-                    __import__("utils"), "get_factor_window_asof"
-                ) else (None, None)
-
-                # Build R from stock returns directly
+                # Build R from stock returns
                 sr = stock_returns_data.copy()
                 sr["Date"] = pd.to_datetime(sr["Date"])
                 asof_dt  = pd.Period(oos_start, "M").to_timestamp(how="end")
