@@ -202,7 +202,7 @@ with st.sidebar:
 # ============================================================================
 # MAIN TAB INTERFACE
 # ============================================================================
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Run Backtest", "📈 Results", "🔍 Risk Analysis", "ℹ️ Info"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Run Backtest", "📈 Results", "🔍 Risk Analysis", "📐 Beta Explorer", "ℹ️ Info"])
 
 # ============================================================================
 # TAB 1: RUN BACKTEST
@@ -585,9 +585,165 @@ with tab3:
             st.dataframe(summary_df, use_container_width=True)
 
 # ============================================================================
-# TAB 4: INFO
+# TAB 4: BETA EXPLORER
 # ============================================================================
 with tab4:
+    st.header("Beta Explorer")
+    st.markdown("Understand the factor landscape **before** committing to target betas.")
+
+    # ── Section 1: Rolling Factor Trend ─────────────────────────────────────
+    st.subheader("📈 Factor Trend — Rolling 12-month Cumulative Return")
+    st.caption("Shows recent momentum of each factor. Rising line = factor has been rewarding lately.")
+
+    try:
+        ff_plot = fama_french_data.copy()
+        ff_plot["Date"] = pd.to_datetime(ff_plot["Date"])
+        ff_plot = ff_plot.sort_values("Date").set_index("Date")
+
+        # Keep only factor columns that exist
+        factor_cols_avail = [c for c in ["MF", "SMB", "HML"] if c in ff_plot.columns]
+
+        # Restrict to lookback window ending at oos_start
+        oos_dt = pd.Period(oos_start, "M").to_timestamp(how="end")
+        lb_dt  = oos_dt - pd.DateOffset(months=lookback_months)
+        ff_window = ff_plot.loc[lb_dt:oos_dt, factor_cols_avail]
+
+        # Rolling 12-month cumulative return (product of 1+r)
+        roll_cum = (1 + ff_window).rolling(12).apply(lambda x: x.prod() - 1, raw=True)
+        roll_cum = roll_cum.dropna()
+
+        fig_trend, ax_trend = plt.subplots(figsize=(12, 4))
+        colors_map = {"MF": "#1f77b4", "SMB": "#2ca02c", "HML": "#d62728"}
+        for col in factor_cols_avail:
+            ax_trend.plot(roll_cum.index, roll_cum[col] * 100,
+                          label=col, linewidth=2, color=colors_map.get(col))
+        ax_trend.axhline(0, color="black", linewidth=0.8, linestyle="--")
+        ax_trend.set_ylabel("12-month rolling return (%)")
+        ax_trend.set_xlabel("Date")
+        ax_trend.set_title(f"Factor Momentum over Lookback Window  ({lb_dt.strftime('%Y-%m')} → {oos_dt.strftime('%Y-%m')})")
+        ax_trend.legend()
+        ax_trend.grid(True, alpha=0.3)
+        ax_trend.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
+        st.pyplot(fig_trend, use_container_width=True)
+
+        # Quick stats table
+        st.caption("**Factor statistics over selected lookback window:**")
+        stats_df = pd.DataFrame({
+            "Ann. Mean (%)":  (ff_window.mean() * 12 * 100).round(2),
+            "Ann. Vol (%)":   (ff_window.std() * np.sqrt(12) * 100).round(2),
+            "Sharpe":         ((ff_window.mean() / ff_window.std()) * np.sqrt(12)).round(3),
+            "Last 12m (%)":   (roll_cum.iloc[-1] * 100).round(2) if len(roll_cum) else np.nan,
+        })
+        st.dataframe(stats_df, use_container_width=True)
+
+    except Exception as e:
+        st.warning(f"Could not render factor trend: {e}")
+
+    st.divider()
+
+    # ── Section 2: Achievable Beta Ranges ────────────────────────────────────
+    st.subheader("🎯 Achievable Beta Ranges")
+    st.caption(f"Min/max portfolio beta reachable given **K_max={K_max}** and **w_max={w_max*100:.0f}%** at **{oos_start}**.")
+    st.info("This tells you which target betas are actually feasible before you run the backtest.")
+
+    if st.button("Compute Beta Ranges", type="primary"):
+        with st.spinner("Estimating betas and computing ranges (MILP)..."):
+            try:
+                from utils import (estimate_betas_asof_nifty,
+                                   compute_achievable_beta_bounds,
+                                   get_factor_window_asof)
+
+                year_sel = pd.Period(oos_start, "M").to_timestamp().year
+                tickers_sel = (
+                    yearly_tickers_data[yearly_tickers_data["Year"] == year_sel]
+                    .drop(columns=["Year"]).iloc[0].dropna().tolist()
+                )
+
+                betas_sel = estimate_betas_asof_nifty(
+                    returns_df       = stock_returns_data,
+                    factors_df       = fama_french_data,
+                    asof             = oos_start,
+                    tickers_in_window= tickers_sel,
+                    lookback_months  = lookback_months,
+                    min_obs          = 24,
+                    use_t_as_last_obs= False,
+                )
+
+                # Need R for compute_achievable_beta_bounds
+                _, R_sel = get_factor_window_asof(
+                    stock_returns_data, fama_french_data, oos_start,
+                    lookback_months, tickers_sel
+                ) if hasattr(
+                    __import__("utils"), "get_factor_window_asof"
+                ) else (None, None)
+
+                # Build R from stock returns directly
+                sr = stock_returns_data.copy()
+                sr["Date"] = pd.to_datetime(sr["Date"])
+                asof_dt  = pd.Period(oos_start, "M").to_timestamp(how="end")
+                lb_dt2   = asof_dt - pd.DateOffset(months=lookback_months)
+                sr_win   = sr[(sr["Date"] > lb_dt2) & (sr["Date"] <= asof_dt)]
+                R_sel    = sr_win.pivot(index="Date", columns="Ticker", values="RET")
+                R_sel    = R_sel[R_sel.columns.intersection(tickers_sel)].dropna(axis=1, thresh=24)
+
+                bounds = compute_achievable_beta_bounds(
+                    R          = R_sel,
+                    betas_asof = betas_sel,
+                    K_max      = K_max,
+                    w_max      = w_max,
+                )
+
+                if "error" in bounds:
+                    st.error(f"Cannot compute ranges: {bounds['error']}")
+                else:
+                    # Table
+                    ranges_df = pd.DataFrame({
+                        f: {"Min achievable": round(v["min"], 3),
+                            "Max achievable": round(v["max"], 3),
+                            "Your target":    round(target_betas.get(f, 0), 3),
+                            "In range?":      "✅" if (v["min"] - 0.01
+                                                       <= target_betas.get(f, 0)
+                                                       <= v["max"] + 0.01) else "❌"}
+                        for f, v in bounds.items()
+                    }).T
+                    st.dataframe(ranges_df, use_container_width=True)
+
+                    # Bar chart
+                    fig_b, ax_b = plt.subplots(figsize=(8, 4))
+                    factors_b = list(bounds.keys())
+                    mins_b  = [bounds[f]["min"] for f in factors_b]
+                    maxs_b  = [bounds[f]["max"] for f in factors_b]
+                    tgts_b  = [target_betas.get(f, 0) for f in factors_b]
+                    x_b     = np.arange(len(factors_b))
+                    bar_h   = [mx - mn for mn, mx in zip(mins_b, maxs_b)]
+
+                    ax_b.bar(x_b, bar_h, bottom=mins_b, color=["#1f77b4","#2ca02c","#d62728"],
+                             alpha=0.4, width=0.5, label="Achievable range")
+                    ax_b.scatter(x_b, tgts_b, color="black", zorder=5,
+                                 s=100, marker="D", label="Your target")
+
+                    for xi, mn, mx, tg in zip(x_b, mins_b, maxs_b, tgts_b):
+                        ax_b.text(xi, mn - 0.05, f"{mn:.2f}", ha="center", fontsize=9, color="grey")
+                        ax_b.text(xi, mx + 0.03, f"{mx:.2f}", ha="center", fontsize=9, color="grey")
+                        ax_b.text(xi, tg + 0.03,  f"↑{tg:.2f}", ha="center", fontsize=9,
+                                  color="black", fontweight="bold")
+
+                    ax_b.set_xticks(x_b)
+                    ax_b.set_xticklabels(factors_b, fontsize=12)
+                    ax_b.set_ylabel("Beta")
+                    ax_b.set_title("Achievable Beta Ranges vs Your Targets")
+                    ax_b.legend()
+                    ax_b.grid(True, alpha=0.3, axis="y")
+                    st.pyplot(fig_b, use_container_width=True)
+
+            except Exception as e:
+                st.error(f"Error computing beta ranges: {e}")
+                st.exception(e)
+
+# ============================================================================
+# TAB 5: INFO
+# ============================================================================
+with tab5:
     st.header("About This Strategy")
     
     st.markdown("""
