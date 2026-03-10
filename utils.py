@@ -763,6 +763,8 @@ def optimize_pulp_mad_targetbetas_cardinality(
     turnover_cap: float | None = None,
     objective_mode: str = "return_minus_risk",
     solver: pulp.LpSolver | None = None,
+    sector_constraints: dict | None = None,
+    ticker_to_sector: dict | None = None,
 ) -> pd.Series:
     """
     MILP (PuLP):
@@ -771,6 +773,12 @@ def optimize_pulp_mad_targetbetas_cardinality(
         sum(w)=1, 0<=w_i<=w_max*z_i, sum(z_i)<=K_max
         target betas within band (or exact)
         optional turnover constraint
+        optional sector min/max stock count constraints
+
+    sector_constraints: {sector_name: (min_stocks, max_stocks)}
+        e.g. {"Banks": (2, 4), "IT": (1, 3)}
+        Either value in the tuple can be None to skip that bound.
+    ticker_to_sector: {ticker: sector_name}  (required when sector_constraints is set)
 
     On infeasibility:
       - prints 1D achievable beta ranges
@@ -836,6 +844,18 @@ def optimize_pulp_mad_targetbetas_cardinality(
 
     prob += pulp.lpSum(z[t] for t in tickers) <= int(K_max)
     prob += pulp.lpSum(w[t] for t in tickers) == 1.0
+
+    # Sector min/max stock constraints
+    if sector_constraints is not None and ticker_to_sector is not None:
+        for sector, (min_k, max_k) in sector_constraints.items():
+            sec_tickers = [t for t in tickers if ticker_to_sector.get(t) == sector]
+            if not sec_tickers:
+                continue
+            sec_z = pulp.lpSum(z[t] for t in sec_tickers)
+            if min_k is not None:
+                prob += sec_z >= int(min_k), f"sector_min_{sector}"
+            if max_k is not None:
+                prob += sec_z <= int(max_k), f"sector_max_{sector}"
 
     # Target beta bands
     for k in factors:
@@ -940,6 +960,8 @@ def build_portfolio_asof_pulp(
     w_prev: pd.Series | None = None,
     turnover_cap: float | None = None,
     objective_mode: str = "return_minus_risk",
+    sector_constraints: dict | None = None,
+    ticker_to_sector: dict | None = None,
 ) -> dict:
     """
     End-to-end portfolio build at one rebalance month 'asof' using PuLP MILP (MAD risk + target betas + max K).
@@ -1017,7 +1039,9 @@ def build_portfolio_asof_pulp(
         w_min_if_selected=w_min_if_selected,
         w_prev=w_prev,
         turnover_cap=turnover_cap,
-        objective_mode=objective_mode
+        objective_mode=objective_mode,
+        sector_constraints=sector_constraints,
+        ticker_to_sector=ticker_to_sector,
     )
 
     return {
@@ -1136,6 +1160,10 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
     # optional turnover control (only applies when you DO rebalance)
     turnover_cap: float | None = None,
 
+    # sector constraints
+    sector_constraints: dict | None = None,
+    ticker_to_sector: dict | None = None,
+
     # <<< ADDED >>> progress controls
     show_progress: bool = True,
     progress_every: int = 1,             # update postfix every N months
@@ -1228,7 +1256,9 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
         target_betas=target_betas,
         beta_tolerances=beta_tolerances,
         w_prev=None,
-        turnover_cap=None
+        turnover_cap=None,
+        sector_constraints=sector_constraints,
+        ticker_to_sector=ticker_to_sector,
     )
 
     w = res0["weights"].copy()
@@ -1317,7 +1347,9 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
                     target_betas=target_betas,
                     beta_tolerances=beta_tolerances,
                     w_prev=w_prev,
-                    turnover_cap=turnover_cap
+                    turnover_cap=turnover_cap,
+                    sector_constraints=sector_constraints,
+                    ticker_to_sector=ticker_to_sector,
                 )
                 w = res_new["weights"].copy()
                 w_prev = w.copy()

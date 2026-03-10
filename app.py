@@ -60,9 +60,12 @@ with st.sidebar:
             index_returns = pd.read_csv(os.path.join(data_dir, 'nifty50_index_data.csv'))
             fama_french = pd.read_csv(os.path.join(data_dir, 'FF_Nifty50.csv'))
             yearly_tickers = pd.read_csv(os.path.join(data_dir, 'Nifty_50.csv'))
-            return stock_returns, index_returns, fama_french, yearly_tickers
-        
-        stock_returns_data, index_returns_data, fama_french_data, yearly_tickers_data = load_data(data_dir)
+            sector_df = pd.read_csv(os.path.join(data_dir, 'sector_classification.csv'))
+            return stock_returns, index_returns, fama_french, yearly_tickers, sector_df
+
+        stock_returns_data, index_returns_data, fama_french_data, yearly_tickers_data, sector_data = load_data(data_dir)
+        ticker_to_sector = dict(zip(sector_data['company'], sector_data['sector']))
+        all_sectors = sorted(sector_data['sector'].unique().tolist())
         st.success("✅ Data loaded successfully")
         
     except FileNotFoundError as e:
@@ -193,6 +196,31 @@ with st.sidebar:
 
     st.divider()
 
+    # Sector Constraints
+    st.subheader("🏭 Sector Constraints")
+    use_sector_constraints = st.checkbox(
+        "Enable Sector Constraints",
+        value=False,
+        help="Set min/max number of stocks per sector"
+    )
+
+    sector_constraints = None
+    if use_sector_constraints:
+        st.caption("Set min and/or max stocks per sector. Leave both at 0 to skip a sector.")
+        sector_constraints = {}
+        for sec in all_sectors:
+            col_a, col_b = st.columns(2)
+            with col_a:
+                mn = st.number_input(f"{sec} min", min_value=0, max_value=20, value=0, step=1, key=f"sec_min_{sec}")
+            with col_b:
+                mx = st.number_input(f"{sec} max", min_value=0, max_value=20, value=0, step=1, key=f"sec_max_{sec}")
+            if mn > 0 or mx > 0:
+                sector_constraints[sec] = (mn if mn > 0 else None, mx if mx > 0 else None)
+        if not sector_constraints:
+            sector_constraints = None
+
+    st.divider()
+
     initial_capital = st.number_input(
         "Initial Capital ($)",
         min_value=10000, max_value=10000000, value=100000, step=10000,
@@ -292,6 +320,8 @@ with tab1:
                     target_betas=target_betas,
                     beta_tolerances=beta_tolerances,
                     turnover_cap=turnover_cap,
+                    sector_constraints=sector_constraints,
+                    ticker_to_sector=ticker_to_sector if sector_constraints else None,
                     show_progress=True
                 )
                 
@@ -526,6 +556,8 @@ with tab3:
                     target_betas=target_betas,
                     beta_tolerances=beta_tolerances,
                     turnover_cap=turnover_cap,
+                    sector_constraints=sector_constraints,
+                    ticker_to_sector=ticker_to_sector if sector_constraints else None,
                     show_progress=False
                 )
                 
