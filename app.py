@@ -230,7 +230,143 @@ with st.sidebar:
 # ============================================================================
 # MAIN TAB INTERFACE
 # ============================================================================
-tab4, tab1, tab2, tab3, tab5 = st.tabs(["📐 Beta Explorer", "📊 Run Backtest", "📈 Results", "🔍 Risk Analysis", "ℹ️ Info"])
+tab4, tab6, tab1, tab2, tab3, tab5 = st.tabs(["📐 Beta Explorer", "🏭 Sector Dynamics", "📊 Run Backtest", "📈 Results", "🔍 Risk Analysis", "ℹ️ Info"])
+
+# ============================================================================
+# TAB 6: SECTOR DYNAMICS
+# ============================================================================
+with tab6:
+    st.header("Sector Dynamics")
+    st.caption(f"Equal-weighted sector performance over the **{lookback_months}-month** lookback window ending at **{oos_start}**.")
+
+    try:
+        # --- date window ---
+        asof_dt = pd.Period(oos_start, "M").to_timestamp(how="end")
+        lb_dt   = asof_dt - pd.DateOffset(months=lookback_months)
+
+        # --- filter stock returns to window ---
+        sr = stock_returns_data.copy()
+        sr["Date"] = pd.to_datetime(sr["Date"])
+        sr_win = sr[(sr["Date"] > lb_dt) & (sr["Date"] <= asof_dt)].copy()
+        sr_win["sector"] = sr_win["Ticker"].map(ticker_to_sector)
+        sr_win = sr_win.dropna(subset=["sector"])
+
+        # equal-weight monthly sector returns  (rows=dates, cols=sectors)
+        sector_monthly = (
+            sr_win.groupby(["Date", "sector"])["RET"]
+            .mean()
+            .unstack("sector")
+            .sort_index()
+        )
+        sector_monthly.index = pd.to_datetime(sector_monthly.index)
+
+        # --- MF factor aligned to same dates ---
+        ff = fama_french_data.copy()
+        ff["Date"] = pd.to_datetime(ff["Date"])
+        ff = ff.sort_values("Date").set_index("Date")
+        mf_series = ff["MF"] if "MF" in ff.columns else None
+
+        sectors_sorted = sorted(sector_monthly.columns.tolist())
+
+        # ── Compute metrics ──────────────────────────────────────────────
+        metrics = {}
+        for sec in sectors_sorted:
+            s = sector_monthly[sec].dropna().sort_index()
+            if len(s) < 2:
+                continue
+
+            s_12 = s.iloc[-12:] if len(s) >= 12 else s
+            s_3  = s.iloc[-3:]  if len(s) >= 3  else s
+
+            ret_12 = float((1 + s_12).prod() - 1)
+            ret_3  = float((1 + s_3).prod() - 1)
+            momentum = "Accelerating" if ret_3 > ret_12 else "Decelerating"
+            ann_vol = float(s.std() * np.sqrt(12))
+            pos_months = int((s > 0).sum())
+
+            # MF beta via OLS
+            mf_beta = np.nan
+            if mf_series is not None:
+                common = s.index.intersection(mf_series.index)
+                if len(common) >= 6:
+                    y = s.loc[common].values
+                    x = mf_series.loc[common].values
+                    X = np.column_stack([np.ones(len(x)), x])
+                    try:
+                        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+                        mf_beta = float(coef[1])
+                    except Exception:
+                        pass
+
+            metrics[sec] = {
+                "12M Return":      f"{ret_12:+.1%}",
+                "3M Return":       f"{ret_3:+.1%}",
+                "Momentum":        momentum,
+                "Ann. Volatility": f"{ann_vol:.1%}",
+                "Positive Months": pos_months,
+                "MF Beta":         f"{mf_beta:.2f}" if not np.isnan(mf_beta) else "N/A",
+            }
+
+        # ── Metrics table ────────────────────────────────────────────────
+        st.subheader("📊 Sector Metrics Table")
+        metrics_df = pd.DataFrame(metrics)   # rows = metrics, cols = sectors
+
+        def _style_cell(val):
+            if val == "Accelerating":
+                return "background-color: #d4edda; color: #155724; font-weight: bold"
+            if val == "Decelerating":
+                return "background-color: #f8d7da; color: #721c24; font-weight: bold"
+            return ""
+
+        try:
+            styled = metrics_df.style.map(_style_cell)
+        except AttributeError:          # older pandas uses applymap
+            styled = metrics_df.style.applymap(_style_cell)
+
+        st.dataframe(styled, use_container_width=True)
+
+        st.divider()
+
+        # ── Small trend charts ───────────────────────────────────────────
+        st.subheader("📈 Cumulative Return Trends")
+        st.caption("Each panel shows equal-weighted cumulative return over the lookback period.")
+
+        n_sectors = len(sectors_sorted)
+        n_cols    = 3
+        n_rows    = (n_sectors + n_cols - 1) // n_cols
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, n_rows * 2.8))
+        axes_flat = np.array(axes).flatten()
+
+        for i, sec in enumerate(sectors_sorted):
+            ax = axes_flat[i]
+            s  = sector_monthly[sec].dropna().sort_index()
+            cum = (1 + s).cumprod() - 1
+
+            final_val = cum.iloc[-1] if len(cum) else 0
+            line_color = "#2ca02c" if final_val >= 0 else "#d62728"
+            fill_color = "#c8e6c9" if final_val >= 0 else "#ffcdd2"
+
+            x = range(len(cum))
+            ax.plot(x, cum.values * 100, color=line_color, linewidth=1.3)
+            ax.fill_between(x, 0, cum.values * 100, alpha=0.25, color=fill_color)
+            ax.axhline(0, color="black", linewidth=0.5, linestyle="--")
+            ax.set_title(sec, fontsize=8, fontweight="bold", pad=2)
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
+            ax.tick_params(axis="both", labelsize=6)
+            ax.grid(True, alpha=0.2, axis="y")
+            ax.set_xticks([])           # hide x-ticks; keep chart compact
+
+        for j in range(n_sectors, len(axes_flat)):
+            axes_flat[j].set_visible(False)
+
+        fig.tight_layout(pad=1.2)
+        st.pyplot(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error computing sector dynamics: {e}")
+        st.exception(e)
+
 
 # ============================================================================
 # TAB 1: RUN BACKTEST
