@@ -22,7 +22,9 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-App opens at **http://localhost:8501**
+Local app opens at **http://localhost:8501**
+
+**Live app**: https://portfolio-construction---factor-model-95qos8gfhft3fkcqnqfius.streamlit.app/
 
 ---
 
