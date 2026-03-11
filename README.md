@@ -1,306 +1,166 @@
-# 🚀 Streamlit App - Factor Model Portfolio Optimizer
+# Factor Model Portfolio Optimizer
 
-A web-based interface for running factor model portfolio optimization backtests using Fama-French 3-factors.
-
-## ✨ Features
-
-- **🎯 Interactive Parameter Configuration**: Adjust backtest settings via sidebar controls
-- **📊 Portfolio Optimization**: MILP-based optimization with target betas and cardinality constraints  
-- **📈 Backtest Execution**: Run backtests from 2020-2023 with quarterly rebalancing
-- **🔍 Results Visualization**: Charts, metrics, and rebalancing logs
-- **📉 Sensitivity Analysis**: Compare multiple risk aversion scenarios
-- **⚠️ Smart Error Messages**: Shows achievable beta ranges when optimization fails
+A Streamlit web app for Fama-French 3-factor portfolio optimization and backtesting on the Nifty 50 universe.
 
 ---
 
-## 🚀 Quick Start (3 Steps)
+## Features
 
-### 1️⃣ Install Dependencies
+- **Beta Explorer** — Visualize MF/SMB/HML factor returns over the lookback window before committing to target betas; compute achievable beta ranges via MILP
+- **Sector Dynamics** — Equal-weighted sector performance dashboard: cumulative return trend charts + metrics table (12M/3M return, momentum, volatility, positive months, MF beta)
+- **Portfolio Optimization** — MILP (PuLP/CBC) with target factor exposures, cardinality constraint, position size limits, optional turnover cap, and sector-level stock count constraints
+- **Backtest** — Rolling-window rebalance with breach-triggered rebalancing; portfolio vs Nifty 50 comparison
+- **Results** — Portfolio value chart, monthly returns, rebalancing log, composition table
+- **Risk Analysis** — Sensitivity sweep across risk aversion values
+
+---
+
+## Quick Start
+
 ```bash
-cd c:\Users\kshit\Personal_Factor_model
 pip install -r requirements.txt
-```
-
-### 2️⃣ Setup Functions (Auto or Manual)
-
-**Option A: Auto-Setup (Easiest)**
-```bash
-python setup_streamlit.py
-```
-
-**Option B: Manual Setup**
-See [EXTRACT_FUNCTIONS.md](EXTRACT_FUNCTIONS.md) for detailed instructions
-
-### 3️⃣ Run the App
-```bash
 streamlit run app.py
 ```
 
-App opens at: **http://localhost:8501**
+App opens at **http://localhost:8501**
 
 ---
 
-## 📋 File Structure
+## File Structure
 
 ```
-c:\Users\kshit\Personal_Factor_model\
-├── app.py                      # Main Streamlit app
-├── utils.py                    # Extracted functions from notebook
-├── setup_streamlit.py          # Auto-setup script
-├── requirements.txt            # Python dependencies
-├── model.ipynb                 # Original Jupyter notebook
-├── README.md                   # This file
-├── DEPLOYMENT_GUIDE.md         # Production deployment
-├── EXTRACT_FUNCTIONS.md        # Function extraction guide
-│
-├── nifty_stocks_data (1).csv   # Stock returns data
-├── nifty50_index_data.csv      # Index returns data  
-├── FF_Nifty50.csv              # Fama-French factors
-└── Nifty_50.csv                # Universe tickers by year
+Personal_Factor_model/
+├── app.py                    # Streamlit app
+├── utils.py                  # Core optimization & backtest functions
+├── setup_streamlit.py        # Auto-setup helper
+├── requirements.txt
+├── model.ipynb               # Original research notebook (gitignored)
+└── data/
+    ├── nifty_stocks_data (1).csv   # Monthly stock returns (Date, Ticker, RET)
+    ├── nifty50_index_data.csv      # Nifty 50 index returns
+    ├── FF_Nifty50.csv              # Fama-French factors (MF, SMB, HML, RF)
+    ├── Nifty_50.csv                # Universe tickers by year
+    └── sector_classification.csv   # Ticker → sector mapping
 ```
 
 ---
 
-## 🎮 How to Use
+## Tab Guide
 
-### Tab 1: Run Backtest
+### 📐 Beta Explorer
+- **Factor trend charts** — 3 stacked panels (MF, SMB, HML) showing monthly factor returns as colour-coded bars + 3-month rolling average over the selected lookback window
+- **Factor statistics table** — annualised mean, vol, Sharpe, min/max
+- **Achievable beta ranges** — click "Compute Beta Ranges" to run a MILP that finds the min/max portfolio beta reachable with your K_max and w_max constraints; checks whether your target betas are feasible before running the backtest
 
-1. **Configure in Sidebar**:
-   - Select OOS start period (2020-01, 2021-01, etc.)
-   - Set duration (months)
-   - Adjust optimization parameters (max positions, position size)
-   - Set target betas and tolerances
+### 🏭 Sector Dynamics
+Click **▶️ Compute Sector Dynamics** to generate:
 
-2. **Click "▶️ Run Backtest"**
+**Metrics table** (sectors as columns):
 
-3. **View Results**:
-   - Strategy vs Index comparison
-   - Final portfolio value
-   - Rebalancing log
+| Metric | Description |
+|--------|-------------|
+| 12M Return | Cumulative equal-weighted sector return over last 12 months |
+| 3M Return | Cumulative return over last 3 months |
+| Momentum | Accelerating (green) if 3M > 12M, else Decelerating (red) |
+| Ann. Volatility | Monthly std × √12 over full lookback |
+| Positive Months | Count of months with positive sector return |
+| MF Beta | OLS regression of sector returns vs MF factor |
 
-**Tip**: If optimization is infeasible, error shows achievable beta ranges:
-```
-[ACHIEVABLE BOUNDS]
-MF: [0.8340, 3.4976]
-SMB: [-2.1223, -0.1006]  ← Adjust target to ~-0.5
-HML: [-0.5123, 1.3492]
-```
+**Trend charts** — small cumulative return panels (3 per row), one per sector. Green fill = positive cumulative return, red fill = negative.
 
-### Tab 2: Results
+Results are cached; use **🔄 Recompute** after changing the as-of date or lookback period.
 
-- **Key Metrics**: Final value, returns, outperformance
-- **Charts**: Portfolio value over time, monthly returns
-- **Rebalancing Log**: All portfolio adjustments with factor exposures
+### 📊 Run Backtest
+Configure parameters in the sidebar and click **▶️ Run Backtest**.
 
-### Tab 3: Risk Analysis
+### 📈 Results
+- Final value, total return, outperformance vs Nifty 50, annual volatility
+- Portfolio value chart and monthly returns bar chart
+- Rebalancing log with factor exposures at each rebalance date
+- Portfolio composition table (weights % by stock and period)
 
-- Run 5-20 backtests with different risk aversion parameters
-- Compare performance across scenarios
-- Summary table with statistics
+### 🔍 Risk Analysis
+Run N backtests across a range of risk aversion values; compare portfolio value curves and summary statistics.
 
-### Tab 4: Info
-
-- Model documentation
-- Factor explanations
-- Data structure guide
+### ℹ️ Info
+Model documentation, optimization formulation, data requirements.
 
 ---
 
-## ⚙️ Configuration Guide
+## Sidebar Configuration
 
 ### Backtest Parameters
 
-| Parameter | Range | Default | Notes |
-|-----------|-------|---------|-------|
-| OOS Start | 2020-2023 | 2020-01 | Backtest start month |
-| OOS Duration | 6-48 months | 24 | Length of backtest |  
-| Lookback | 12-120 months | 36 | Months for beta estimation |
-| Rebalance Freq | 1-12 months | 3 | Portfolio rebalance frequency |
+| Parameter | Range | Default |
+|-----------|-------|---------|
+| Out-of-Sample Start | any month in data | ~5 years before latest |
+| OOS Duration | 6–48 months | 24 |
+| Lookback Period | 12–120 months | 36 |
+| Rebalance Frequency | 1–12 months | 3 |
 
-### Optimization Parameters
+### Optimization Constraints
 
-| Parameter | Range | Default | Notes |
-|-----------|-------|---------|-------|
-| Max Positions | 5-50 | 15 | Maximum stocks in portfolio |
-| Max Position | 5%-50% | 20% | Max weight per stock |
-| Risk Aversion | 0.1-10 | 1.0 | Higher = more conservative |
+| Parameter | Range | Default |
+|-----------|-------|---------|
+| Max Positions (K_max) | 5–50 | 15 |
+| Max Position Size (w_max) | 5%–50% | 20% |
+| Risk Aversion (λ) | 0.1–10 | 1.0 |
 
 ### Target Betas & Tolerances
 
-| Factor | Default Target | Default Tol | Notes |
-|--------|-----------------|-------------|-------|
-| MF (Market) | 1.0 | ±0.3 | Market exposure |
-| SMB (Size) | 0.0 | ±0.3 | Small-cap exposure |
-| HML (Value) | 0.2 | ±0.3 | Value stock exposure |
+| Factor | Default Target | Default Tolerance |
+|--------|---------------|-------------------|
+| MF (Market) | 1.0 | ±0.3 |
+| SMB (Size) | 0.0 | ±0.3 |
+| HML (Value) | 0.2 | ±0.3 |
 
-**Tip**: Check the debug output if optimization fails - it shows which ranges are actually achievable!
+### Turnover Cap
+Optional constraint limiting total portfolio turnover per rebalance (`|w_new - w_old|` summed across all positions).
+
+### Sector Constraints
+Enable per-sector stock count limits:
+- Tick a sector checkbox to activate its constraint
+- Set **min** (≥ N stocks from this sector) and/or **max** (≤ N stocks)
+- **Set max = 0 to fully exclude a sector** from the portfolio
+- Click **✅ Confirm Sector Constraints** to apply all inputs at once — no per-keystroke rerenders
 
 ---
 
-## 🔧 Troubleshooting
+## Model Summary
 
-### ❌ "Cannot import backtest functions"
-```bash
-# Option 1: Run auto-setup
-python setup_streamlit.py
-
-# Option 2: Manual extraction
-jupyter nbconvert --to script model.ipynb --output utils.py
-# Then edit utils.py to keep only function definitions
+**Regression (per stock, rolling window):**
+```
+RET - RF = α + β_MF·MF + β_SMB·SMB + β_HML·HML + ε
 ```
 
-### ❌ "Optimization Failed: Infeasible"
-The app shows achievable beta ranges. Adjust:
-- **Target betas** to be within achievable ranges
-- **Tolerances** to be wider (increase ±)
-- **Constraints** like K_max or w_max to be looser
-
-Example fix:
-```python
-# Before (infeasible)
-target_betas={"MF": 1.0, "SMB": 0.0, "HML": 0.2}
-beta_tolerances={"MF": 0.1, "SMB": 0.1, "HML": 0.1}
-
-# After (feasible)
-target_betas={"MF": 1.0, "SMB": -0.5, "HML": 0.2}
-beta_tolerances={"MF": 0.3, "SMB": 0.5, "HML": 0.3}
+**Optimization (MILP via PuLP/CBC):**
 ```
-
-### ❌ "Data not found"
-Ensure CSV files are in same directory as app.py:
-- ✅ nifty_stocks_data (1).csv
-- ✅ nifty50_index_data.csv
-- ✅ FF_Nifty50.csv
-- ✅ Nifty_50.csv
-
-### ⚠️ Slow Performance
-- Reduce OOS duration (12 months instead of 24)
-- Increase rebalance frequency (6 months instead of 3)
-- Reduce K_max (10 instead of 15)
-
----
-
-## 📊 Running Multiple Scenarios
-
-### Example Workflow
-
-1. **Run with Conservative Settings**:
-   - Risk Aversion: 5.0
-   - Target: MF=1.0, SMB=-0.5, HML=0.2
-   - Tolerances: 0.3 each
-
-2. **Switch to Aggressive**:
-   - Risk Aversion: 1.0
-   - Same targets but wider tolerances (0.5)
-
-3. **Compare in Risk Analysis Tab**:
-   - Run 10 scenarios from RA 1-5
-   - View performance curves
-   - Identify optimal risk level
-
----
-
-## 🌐 Deployment Options
-
-See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for:
-- **Streamlit Cloud** (Easiest, Free)
-- **Heroku** (Paid)
-- **AWS EC2** (Scalable)
-- **Docker** (Production)
-
-Quick Streamlit Cloud deployment:
-```bash
-# 1. Push to GitHub
-git push origin main
-
-# 2. Go to https://streamlit.io/cloud
-# 3. Connect repo and deploy
+maximize  μᵀw - λ·MAD(Rₚ)
+subject to
+  Σwᵢ = 1                          fully invested
+  wᵢ ≤ w_max · zᵢ                  position size limit
+  Σzᵢ ≤ K_max                      cardinality
+  β_target - tol ≤ Bw ≤ β_target + tol   factor exposure bands
+  Σ_{i∈sector} zᵢ ∈ [min_k, max_k]       sector constraints (optional)
+  Σ|wᵢ - wᵢ_prev| ≤ turnover_cap         turnover cap (optional)
 ```
 
 ---
 
-## 📚 Understanding the Output
+## Troubleshooting
 
-### Optimization Debug Info
-When optimization fails, shows:
-```
-[REQUESTED BETA BANDS]
-MF: 1.0000 ± 0.1000 => [0.9000, 1.1000]
+**Optimization infeasible** — Use Beta Explorer → Compute Beta Ranges to see what betas are actually achievable. Widen tolerances or adjust targets accordingly.
 
-[ACHIEVABLE BOUNDS]  
-MF: [0.8340, 3.4976]        ← What's actually possible
-SMB: [-2.1223, -0.1006]     ← Adjust target to ~-0.5
-HML: [-0.5123, 1.3492]
+**Data not found** — Ensure all CSV files are present in the `data/` directory including `sector_classification.csv` (columns: `company`, `sector`).
 
-[CONDITIONAL BOUNDS]
-SMB: [-1.0886, -0.2718]     ← Range when MF & HML satisfied
-```
-
-### Performance Metrics
-- **Final Value**: Portfolio value at end of backtest
-- **Total Return %**: (Final - Initial) / Initial × 100
-- **Annual Return %**: Total Return / (months/12)
-- **Annual Vol %**: Monthly return std × √12 × 100
+**App slow** — Reduce OOS duration, increase rebalance frequency, or reduce K_max.
 
 ---
 
-## 🎓 Model Documentation
+## Dependencies
 
-### Fama-French 3-Factor Model
-
-Returns decomposed as:
-$$R_i - R_f = \alpha + \beta_{MF}(R_m - R_f) + \beta_{SMB} \cdot SMB + \beta_{HML} \cdot HML + \epsilon$$
-
-Where:
-- **MF**: Market factor (broad market excess return)
-- **SMB**: Size factor (small-cap minus large-cap return)
-- **HML**: Value factor (high B/M minus low B/M return)
-
-### Optimization Problem
-
-Maximize:
-$$\mu^T w - \lambda \cdot MAD(R_p)$$
-
-Subject to:
-- $\sum w_i = 1$ (fully invested)
-- $w_i \leq w_{max} \cdot z_i$ (position limits)
-- $\sum z_i \leq K_{max}$ (cardinality)
-- $\beta_{target} - \text{tol} \leq B w \leq \beta_{target} + \text{tol}$ (target betas)
-
-Where:
-- λ = risk aversion parameter
-- MAD = Mean Absolute Deviation
-- B = beta matrix
+Streamlit · PuLP · Pandas · NumPy · Matplotlib · SciPy · tqdm
 
 ---
 
-## 📞 Support & Resources
-
-**If you get stuck:**
-
-1. **Check error message** - shows achievable beta ranges
-2. **Read EXTRACT_FUNCTIONS.md** - for setup issues
-3. **Review DEPLOYMENT_GUIDE.md** - for deployment
-4. **Adjust constraints** - make beta bands wider
-5. **Reduce backtest period** - for faster testing
-
-**External Resources:**
-- [Streamlit Docs](https://docs.streamlit.io)
-- [PuLP Optimization](https://coin-or.github.io/pulp/)
-- [Fama-French Data](https://ken.french/Data_Library.html)
-
----
-
-## 📝 License & Credits
-
-Built with:
-- **Streamlit** - Web framework
-- **PuLP** - MILP optimization  
-- **Pandas** - Data manipulation
-- **Matplotlib** - Visualization
-- **NumPy** - Numerical computing
-
----
-
-**Last Updated**: March 2026  
-**Version**: 1.0
+**Version**: 2.0 | **Last Updated**: March 2026
