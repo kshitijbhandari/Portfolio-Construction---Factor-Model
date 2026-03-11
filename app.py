@@ -306,14 +306,36 @@ tab4, tab6, tab1, tab2, tab3, tab5 = st.tabs(["📐 Beta Explorer", "🏭 Sector
 # ============================================================================
 with tab6:
     st.header("Sector Dynamics")
-    st.caption(f"Equal-weighted sector performance over the **{lookback_months}-month** lookback window ending at **{oos_start}**.")
 
-    try:
-        sector_monthly, metrics = compute_sector_dynamics(
-            oos_start, lookback_months,
-            stock_returns_data, fama_french_data, ticker_to_sector
-        )
+    _sd_key = f"{oos_start}|{lookback_months}"   # track when params change
+
+    # Invalidate stored results if oos_start or lookback changed
+    if st.session_state.get("sd_key") != _sd_key:
+        st.session_state.pop("sd_results", None)
+
+    if "sd_results" not in st.session_state:
+        st.info(f"Configure **As-of date** ({oos_start}) and **Lookback** ({lookback_months}m) in the sidebar, then click below.")
+        if st.button("▶️ Compute Sector Dynamics", type="primary", use_container_width=True):
+            with st.spinner("Computing sector metrics..."):
+                try:
+                    sector_monthly, metrics = compute_sector_dynamics(
+                        oos_start, lookback_months,
+                        stock_returns_data, fama_french_data, ticker_to_sector
+                    )
+                    st.session_state["sd_results"] = (sector_monthly, metrics)
+                    st.session_state["sd_key"] = _sd_key
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.exception(e)
+    else:
+        sector_monthly, metrics = st.session_state["sd_results"]
         sectors_sorted = sorted(sector_monthly.columns.tolist())
+
+        st.caption(f"Equal-weighted sector performance — **{lookback_months}-month** lookback ending **{oos_start}**.")
+        if st.button("🔄 Recompute", help="Recompute after changing sidebar parameters"):
+            st.session_state.pop("sd_results", None)
+            st.rerun()
 
         # ── Metrics table ────────────────────────────────────────────────
         st.subheader("📊 Sector Metrics Table")
@@ -371,10 +393,6 @@ with tab6:
         fig.tight_layout(pad=1.2)
         st.pyplot(fig, use_container_width=True)
         plt.close(fig)
-
-    except Exception as e:
-        st.error(f"Error computing sector dynamics: {e}")
-        st.exception(e)
 
 
 # ============================================================================
