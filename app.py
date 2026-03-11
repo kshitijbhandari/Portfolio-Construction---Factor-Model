@@ -239,19 +239,17 @@ with tab6:
     st.header("Sector Dynamics")
     st.caption(f"Equal-weighted sector performance over the **{lookback_months}-month** lookback window ending at **{oos_start}**.")
 
-    try:
-        # --- date window ---
+    @st.cache_data
+    def compute_sector_dynamics(oos_start, lookback_months, _stock_returns, _fama_french, _ticker_to_sector):
         asof_dt = pd.Period(oos_start, "M").to_timestamp(how="end")
         lb_dt   = asof_dt - pd.DateOffset(months=lookback_months)
 
-        # --- filter stock returns to window ---
-        sr = stock_returns_data.copy()
+        sr = _stock_returns.copy()
         sr["Date"] = pd.to_datetime(sr["Date"])
-        sr_win = sr[(sr["Date"] > lb_dt) & (sr["Date"] <= asof_dt)].copy()
-        sr_win["sector"] = sr_win["Ticker"].map(ticker_to_sector)
+        sr_win = sr[(sr["Date"] > lb_dt) & (sr["Date"] <= asof_dt)]
+        sr_win = sr_win.assign(sector=sr_win["Ticker"].map(_ticker_to_sector))
         sr_win = sr_win.dropna(subset=["sector"])
 
-        # equal-weight monthly sector returns  (rows=dates, cols=sectors)
         sector_monthly = (
             sr_win.groupby(["Date", "sector"])["RET"]
             .mean()
@@ -260,17 +258,13 @@ with tab6:
         )
         sector_monthly.index = pd.to_datetime(sector_monthly.index)
 
-        # --- MF factor aligned to same dates ---
-        ff = fama_french_data.copy()
+        ff = _fama_french.copy()
         ff["Date"] = pd.to_datetime(ff["Date"])
         ff = ff.sort_values("Date").set_index("Date")
         mf_series = ff["MF"] if "MF" in ff.columns else None
 
-        sectors_sorted = sorted(sector_monthly.columns.tolist())
-
-        # ── Compute metrics ──────────────────────────────────────────────
         metrics = {}
-        for sec in sectors_sorted:
+        for sec in sorted(sector_monthly.columns):
             s = sector_monthly[sec].dropna().sort_index()
             if len(s) < 2:
                 continue
@@ -284,7 +278,6 @@ with tab6:
             ann_vol = float(s.std() * np.sqrt(12))
             pos_months = int((s > 0).sum())
 
-            # MF beta via OLS
             mf_beta = np.nan
             if mf_series is not None:
                 common = s.index.intersection(mf_series.index)
@@ -307,9 +300,18 @@ with tab6:
                 "MF Beta":         f"{mf_beta:.2f}" if not np.isnan(mf_beta) else "N/A",
             }
 
+        return sector_monthly, metrics
+
+    try:
+        sector_monthly, metrics = compute_sector_dynamics(
+            oos_start, lookback_months,
+            stock_returns_data, fama_french_data, ticker_to_sector
+        )
+        sectors_sorted = sorted(sector_monthly.columns.tolist())
+
         # ── Metrics table ────────────────────────────────────────────────
         st.subheader("📊 Sector Metrics Table")
-        metrics_df = pd.DataFrame(metrics)   # rows = metrics, cols = sectors
+        metrics_df = pd.DataFrame(metrics)
 
         def _style_cell(val):
             if val == "Accelerating":
@@ -320,7 +322,7 @@ with tab6:
 
         try:
             styled = metrics_df.style.map(_style_cell)
-        except AttributeError:          # older pandas uses applymap
+        except AttributeError:
             styled = metrics_df.style.applymap(_style_cell)
 
         st.dataframe(styled, use_container_width=True)
@@ -343,11 +345,11 @@ with tab6:
             s  = sector_monthly[sec].dropna().sort_index()
             cum = (1 + s).cumprod() - 1
 
-            final_val = cum.iloc[-1] if len(cum) else 0
+            final_val = float(cum.iloc[-1]) if len(cum) else 0
             line_color = "#2ca02c" if final_val >= 0 else "#d62728"
             fill_color = "#c8e6c9" if final_val >= 0 else "#ffcdd2"
 
-            x = range(len(cum))
+            x = list(range(len(cum)))
             ax.plot(x, cum.values * 100, color=line_color, linewidth=1.3)
             ax.fill_between(x, 0, cum.values * 100, alpha=0.25, color=fill_color)
             ax.axhline(0, color="black", linewidth=0.5, linestyle="--")
@@ -355,13 +357,14 @@ with tab6:
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
             ax.tick_params(axis="both", labelsize=6)
             ax.grid(True, alpha=0.2, axis="y")
-            ax.set_xticks([])           # hide x-ticks; keep chart compact
+            ax.set_xticks([])
 
         for j in range(n_sectors, len(axes_flat)):
             axes_flat[j].set_visible(False)
 
         fig.tight_layout(pad=1.2)
         st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
 
     except Exception as e:
         st.error(f"Error computing sector dynamics: {e}")
