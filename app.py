@@ -310,21 +310,32 @@ with st.sidebar:
         help="Set min/max number of stocks per sector"
     )
 
-    sector_constraints = None
+    sector_constraints = st.session_state.get("confirmed_sector_constraints", None)
     if use_sector_constraints:
-        st.caption("Tick a sector to constrain it. Set max=0 to fully exclude it.")
-        sector_constraints = {}
-        for sec in all_sectors:
-            enabled = st.checkbox(sec, value=False, key=f"sec_enabled_{sec}")
-            if enabled:
-                col_a, col_b = st.columns(2)
+        st.caption("Set limits, then click **Confirm** to apply in one go.")
+        with st.form("sector_constraints_form"):
+            raw = {}
+            for sec in all_sectors:
+                col_a, col_b, col_c = st.columns([2, 1, 1])
                 with col_a:
-                    mn = st.number_input("min", min_value=0, max_value=20, value=0, step=1, key=f"sec_min_{sec}")
+                    enabled = st.checkbox(sec, value=False, key=f"sec_enabled_{sec}")
                 with col_b:
+                    mn = st.number_input("min", min_value=0, max_value=20, value=0, step=1, key=f"sec_min_{sec}")
+                with col_c:
                     mx = st.number_input("max", min_value=0, max_value=20, value=5, step=1, key=f"sec_max_{sec}")
-                sector_constraints[sec] = (mn if mn > 0 else None, mx)
-        if not sector_constraints:
-            sector_constraints = None
+                raw[sec] = (enabled, mn, mx)
+
+            submitted = st.form_submit_button("✅ Confirm Sector Constraints", use_container_width=True, type="primary")
+            if submitted:
+                confirmed = {}
+                for sec, (enabled, mn, mx) in raw.items():
+                    if enabled:
+                        confirmed[sec] = (mn if mn > 0 else None, mx)
+                st.session_state["confirmed_sector_constraints"] = confirmed if confirmed else None
+                sector_constraints = st.session_state["confirmed_sector_constraints"]
+    else:
+        st.session_state.pop("confirmed_sector_constraints", None)
+        sector_constraints = None
 
     st.divider()
 
