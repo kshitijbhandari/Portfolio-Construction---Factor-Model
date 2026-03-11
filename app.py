@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')   # non-interactive backend — avoids GUI memory overhead
 import matplotlib.pyplot as plt
 from datetime import datetime
 import sys
@@ -10,6 +12,72 @@ warnings.filterwarnings('ignore')
 
 # Add notebook functions to path if needed
 sys.path.insert(0, os.path.dirname(__file__))
+
+# ============================================================================
+# MODULE-LEVEL CACHED FUNCTIONS  (must be at top level so cache persists)
+# ============================================================================
+@st.cache_data(max_entries=10)
+def compute_sector_dynamics(oos_start, lookback_months, _stock_returns, _fama_french, _ticker_to_sector):
+    asof_dt = pd.Period(oos_start, "M").to_timestamp(how="end")
+    lb_dt   = asof_dt - pd.DateOffset(months=lookback_months)
+
+    sr = _stock_returns
+    sr_win = sr[(sr["Date"] > lb_dt) & (sr["Date"] <= asof_dt)]
+    sr_win = sr_win.assign(sector=sr_win["Ticker"].map(_ticker_to_sector))
+    sr_win = sr_win.dropna(subset=["sector"])
+
+    sector_monthly = (
+        sr_win.groupby(["Date", "sector"])["RET"]
+        .mean()
+        .unstack("sector")
+        .sort_index()
+    )
+    sector_monthly.index = pd.to_datetime(sector_monthly.index)
+
+    mf_series = None
+    if "MF" in _fama_french.columns:
+        ff_tmp = _fama_french.copy()
+        ff_tmp["Date"] = pd.to_datetime(ff_tmp["Date"])
+        mf_series = ff_tmp.set_index("Date")["MF"]
+
+    metrics = {}
+    for sec in sorted(sector_monthly.columns):
+        s = sector_monthly[sec].dropna().sort_index()
+        if len(s) < 2:
+            continue
+
+        s_12 = s.iloc[-12:] if len(s) >= 12 else s
+        s_3  = s.iloc[-3:]  if len(s) >= 3  else s
+
+        ret_12 = float((1 + s_12).prod() - 1)
+        ret_3  = float((1 + s_3).prod() - 1)
+        momentum  = "Accelerating" if ret_3 > ret_12 else "Decelerating"
+        ann_vol   = float(s.std() * np.sqrt(12))
+        pos_months = int((s > 0).sum())
+
+        mf_beta = np.nan
+        if mf_series is not None:
+            common = s.index.intersection(mf_series.index)
+            if len(common) >= 6:
+                y = s.loc[common].values
+                x = mf_series.loc[common].values
+                X = np.column_stack([np.ones(len(x)), x])
+                try:
+                    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+                    mf_beta = float(coef[1])
+                except Exception:
+                    pass
+
+        metrics[sec] = {
+            "12M Return":      f"{ret_12:+.1%}",
+            "3M Return":       f"{ret_3:+.1%}",
+            "Momentum":        momentum,
+            "Ann. Volatility": f"{ann_vol:.1%}",
+            "Positive Months": pos_months,
+            "MF Beta":         f"{mf_beta:.2f}" if not np.isnan(mf_beta) else "N/A",
+        }
+
+    return sector_monthly, metrics
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -239,69 +307,6 @@ tab4, tab6, tab1, tab2, tab3, tab5 = st.tabs(["📐 Beta Explorer", "🏭 Sector
 with tab6:
     st.header("Sector Dynamics")
     st.caption(f"Equal-weighted sector performance over the **{lookback_months}-month** lookback window ending at **{oos_start}**.")
-
-    @st.cache_data
-    def compute_sector_dynamics(oos_start, lookback_months, _stock_returns, _fama_french, _ticker_to_sector):
-        asof_dt = pd.Period(oos_start, "M").to_timestamp(how="end")
-        lb_dt   = asof_dt - pd.DateOffset(months=lookback_months)
-
-        sr = _stock_returns.copy()
-        sr["Date"] = pd.to_datetime(sr["Date"])
-        sr_win = sr[(sr["Date"] > lb_dt) & (sr["Date"] <= asof_dt)]
-        sr_win = sr_win.assign(sector=sr_win["Ticker"].map(_ticker_to_sector))
-        sr_win = sr_win.dropna(subset=["sector"])
-
-        sector_monthly = (
-            sr_win.groupby(["Date", "sector"])["RET"]
-            .mean()
-            .unstack("sector")
-            .sort_index()
-        )
-        sector_monthly.index = pd.to_datetime(sector_monthly.index)
-
-        ff = _fama_french.copy()
-        ff["Date"] = pd.to_datetime(ff["Date"])
-        ff = ff.sort_values("Date").set_index("Date")
-        mf_series = ff["MF"] if "MF" in ff.columns else None
-
-        metrics = {}
-        for sec in sorted(sector_monthly.columns):
-            s = sector_monthly[sec].dropna().sort_index()
-            if len(s) < 2:
-                continue
-
-            s_12 = s.iloc[-12:] if len(s) >= 12 else s
-            s_3  = s.iloc[-3:]  if len(s) >= 3  else s
-
-            ret_12 = float((1 + s_12).prod() - 1)
-            ret_3  = float((1 + s_3).prod() - 1)
-            momentum = "Accelerating" if ret_3 > ret_12 else "Decelerating"
-            ann_vol = float(s.std() * np.sqrt(12))
-            pos_months = int((s > 0).sum())
-
-            mf_beta = np.nan
-            if mf_series is not None:
-                common = s.index.intersection(mf_series.index)
-                if len(common) >= 6:
-                    y = s.loc[common].values
-                    x = mf_series.loc[common].values
-                    X = np.column_stack([np.ones(len(x)), x])
-                    try:
-                        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
-                        mf_beta = float(coef[1])
-                    except Exception:
-                        pass
-
-            metrics[sec] = {
-                "12M Return":      f"{ret_12:+.1%}",
-                "3M Return":       f"{ret_3:+.1%}",
-                "Momentum":        momentum,
-                "Ann. Volatility": f"{ann_vol:.1%}",
-                "Positive Months": pos_months,
-                "MF Beta":         f"{mf_beta:.2f}" if not np.isnan(mf_beta) else "N/A",
-            }
-
-        return sector_monthly, metrics
 
     try:
         sector_monthly, metrics = compute_sector_dynamics(
