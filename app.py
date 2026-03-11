@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')   # non-interactive backend — avoids GUI memory overhead
 import matplotlib.pyplot as plt
+import io
 from datetime import datetime
 import sys
 import os
@@ -77,7 +78,44 @@ def compute_sector_dynamics(oos_start, lookback_months, _stock_returns, _fama_fr
             "MF Beta":         f"{mf_beta:.2f}" if not np.isnan(mf_beta) else "N/A",
         }
 
-    return sector_monthly, metrics
+    # Build figure as PNG bytes so it never needs to be recreated on rerender
+    sectors_sorted = sorted(sector_monthly.columns.tolist())
+    n_sectors = len(sectors_sorted)
+    n_cols    = 3
+    n_rows    = (n_sectors + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, n_rows * 2.8))
+    axes_flat = np.array(axes).flatten()
+
+    for i, sec in enumerate(sectors_sorted):
+        ax  = axes_flat[i]
+        s   = sector_monthly[sec].dropna().sort_index()
+        cum = (1 + s).cumprod() - 1
+
+        final_val  = float(cum.iloc[-1]) if len(cum) else 0
+        line_color = "#2ca02c" if final_val >= 0 else "#d62728"
+        fill_color = "#c8e6c9" if final_val >= 0 else "#ffcdd2"
+
+        x = list(range(len(cum)))
+        ax.plot(x, cum.values * 100, color=line_color, linewidth=1.3)
+        ax.fill_between(x, 0, cum.values * 100, alpha=0.25, color=fill_color)
+        ax.axhline(0, color="black", linewidth=0.5, linestyle="--")
+        ax.set_title(sec, fontsize=8, fontweight="bold", pad=2)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
+        ax.tick_params(axis="both", labelsize=6)
+        ax.grid(True, alpha=0.2, axis="y")
+        ax.set_xticks([])
+
+    for j in range(n_sectors, len(axes_flat)):
+        axes_flat[j].set_visible(False)
+
+    fig.tight_layout(pad=1.2)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=90, bbox_inches="tight")
+    plt.close(fig)
+    fig_bytes = buf.getvalue()
+
+    return sector_monthly, metrics, fig_bytes
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -318,19 +356,18 @@ with tab6:
         if st.button("▶️ Compute Sector Dynamics", type="primary", use_container_width=True):
             with st.spinner("Computing sector metrics..."):
                 try:
-                    sector_monthly, metrics = compute_sector_dynamics(
+                    sector_monthly, metrics, fig_bytes = compute_sector_dynamics(
                         oos_start, lookback_months,
                         stock_returns_data, fama_french_data, ticker_to_sector
                     )
-                    st.session_state["sd_results"] = (sector_monthly, metrics)
+                    st.session_state["sd_results"] = (sector_monthly, metrics, fig_bytes)
                     st.session_state["sd_key"] = _sd_key
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
                     st.exception(e)
     else:
-        sector_monthly, metrics = st.session_state["sd_results"]
-        sectors_sorted = sorted(sector_monthly.columns.tolist())
+        sector_monthly, metrics, fig_bytes = st.session_state["sd_results"]
 
         st.caption(f"Equal-weighted sector performance — **{lookback_months}-month** lookback ending **{oos_start}**.")
         if st.button("🔄 Recompute", help="Recompute after changing sidebar parameters"):
@@ -357,42 +394,10 @@ with tab6:
 
         st.divider()
 
-        # ── Small trend charts ───────────────────────────────────────────
+        # ── Trend charts — displayed from pre-rendered PNG bytes ─────────
         st.subheader("📈 Cumulative Return Trends")
         st.caption("Each panel shows equal-weighted cumulative return over the lookback period.")
-
-        n_sectors = len(sectors_sorted)
-        n_cols    = 3
-        n_rows    = (n_sectors + n_cols - 1) // n_cols
-
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, n_rows * 2.8))
-        axes_flat = np.array(axes).flatten()
-
-        for i, sec in enumerate(sectors_sorted):
-            ax = axes_flat[i]
-            s  = sector_monthly[sec].dropna().sort_index()
-            cum = (1 + s).cumprod() - 1
-
-            final_val = float(cum.iloc[-1]) if len(cum) else 0
-            line_color = "#2ca02c" if final_val >= 0 else "#d62728"
-            fill_color = "#c8e6c9" if final_val >= 0 else "#ffcdd2"
-
-            x = list(range(len(cum)))
-            ax.plot(x, cum.values * 100, color=line_color, linewidth=1.3)
-            ax.fill_between(x, 0, cum.values * 100, alpha=0.25, color=fill_color)
-            ax.axhline(0, color="black", linewidth=0.5, linestyle="--")
-            ax.set_title(sec, fontsize=8, fontweight="bold", pad=2)
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0f}%"))
-            ax.tick_params(axis="both", labelsize=6)
-            ax.grid(True, alpha=0.2, axis="y")
-            ax.set_xticks([])
-
-        for j in range(n_sectors, len(axes_flat)):
-            axes_flat[j].set_visible(False)
-
-        fig.tight_layout(pad=1.2)
-        st.pyplot(fig, use_container_width=True)
-        plt.close(fig)
+        st.image(fig_bytes, use_container_width=True)
 
 
 # ============================================================================
