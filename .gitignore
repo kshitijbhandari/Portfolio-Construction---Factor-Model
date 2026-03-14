@@ -53,5 +53,18 @@ Thumbs.db
 temp/
 cache/
 
+# CSV generator scripts
+csv generator files/
+
 # Generated reports
 Factor_Model_Report.docx
+Barra_Axioma_Comparison_Report.docx
+
+# Temp / test scripts
+_test_run.py
+test_bo_cell.py
+update_bo_cell.py
+add_bo_cell.py
+
+# BO output log (generated at runtime)
+bo_search_log.json
