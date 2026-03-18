@@ -39,6 +39,30 @@ Local app opens at **http://localhost:8501**
 
 ---
 
+## Stock Universe Construction
+
+The investment universe is the **historical NIFTY 50** — the exact set of stocks that were constituents of the index at any given point in time, going back to June 2006.
+
+### Why Historical Composition?
+Using only the *current* NIFTY 50 for backtesting would introduce **survivorship bias** — stocks that were dropped (due to bankruptcy, delisting, poor performance) would be excluded, making past performance look artificially better. Instead, the model uses point-in-time composition snapshots.
+
+### How It Was Built
+
+1. **Scraped Wikipedia** for the current NIFTY 50 constituents and a full log of every index addition/removal since June 2006 (64 change events across 44 unique dates)
+
+2. **Built a ticker mapping** — Wikipedia uses company names; a lookup table (`nifty_50_historical_companies.csv`) maps all 88 current and historical constituents to their NSE ticker symbols
+
+3. **Backward reconstruction** — Starting from today's known 50 stocks, the algorithm walks backwards through the change log:
+   - At each change date: remove newly added stocks, add back removed ones
+   - This gives the exact index composition just before that change
+   - Repeated across all 44 change events back to June 2006
+
+4. **Output**: `Nifty_50.csv` — a 44 × 50 matrix where each row is a change date and each column is a ticker in the NIFTY 50 at that time
+
+The backtest engine uses this file to select the eligible stock universe at each rebalance date, ensuring only stocks that were actually in the index at that time are considered.
+
+---
+
 ## File Structure
 
 ```
