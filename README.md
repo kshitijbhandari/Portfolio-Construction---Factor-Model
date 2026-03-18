@@ -24,7 +24,7 @@ streamlit run app.py
 
 Local app opens at **http://localhost:8501**
 
-**Live app**: https://portfolio-construction---factor-model-95qos8gfhft3fkcqnqfius.streamlit.app/
+**Live app**: [https://portfolio-construction---factor-model-95qos8gfhft3fkcqnqfius.streamlit.app/](https://huggingface.co/spaces/kshitijbhandari/Factor-based-Portfolio-Constructor)
 
 ---
 
