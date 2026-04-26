@@ -1199,10 +1199,9 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
     stock_returns_data: pd.DataFrame,    # Date, Ticker, RET (monthly, decimals)
     fama_french_data: pd.DataFrame,      # Date, MF, SMB, HML, RF (monthly, decimals)
     index_returns,                       # accept Series OR DataFrame
+    oos_start: str | pd.Timestamp,       # first OOS month (month-end)
     universe_by_year: dict | None = None,   # legacy: {year: [tickers]}
     ticker_universe: dict | None = None,    # preferred: {month_end_ts: [tickers]} from build_ticker_universe()
-
-    oos_start: str | pd.Timestamp,       # first OOS month (month-end)
     oos_months: int = 24,
     lookback_months: int = 36,
     rebalance_every: int = 3,            # quarterly
