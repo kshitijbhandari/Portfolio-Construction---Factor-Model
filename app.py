@@ -222,7 +222,7 @@ with st.sidebar:
     
     oos_months = st.slider(
         "OOS Duration (months)",
-        min_value=6, max_value=48, value=24, step=1,
+        min_value=3, max_value=48, value=24, step=1,
         help="Number of months to backtest"
     )
     
