@@ -563,16 +563,10 @@ def optimize_pulp_mad_targetbetas_cardinality(
     else:
         raise ValueError("objective_mode must be 'return_minus_risk' or 'min_risk'")
 
-    # Solve — unique tmpDir so parallel Optuna trials don't collide on CBC temp files
-    _tmpdir = None
+    # Solve
     if solver is None:
-        _tmpdir = tempfile.mkdtemp(prefix='pulp_cbc_')
-        solver = pulp.PULP_CBC_CMD(msg=False, tmpDir=_tmpdir)
-    try:
-        status = prob.solve(solver)
-    finally:
-        if _tmpdir is not None:
-            shutil.rmtree(_tmpdir, ignore_errors=True)
+        solver = pulp.PULP_CBC_CMD(msg=False)
+    status = prob.solve(solver)
     if pulp.LpStatus[status] != "Optimal":
         # Compute achievable beta bounds to inform the user
         achievable = compute_achievable_beta_bounds(R, betas_asof, K_max, w_max, solver)
@@ -961,16 +955,10 @@ def optimize_pulp_mad_targetbetas_cardinality(
     else:
         raise ValueError("objective_mode must be 'return_minus_risk' or 'min_risk'")
 
-    # Solve — unique tmpDir so parallel Optuna trials don't collide on CBC temp files
-    _tmpdir = None
+    # Solve
     if solver is None:
-        _tmpdir = tempfile.mkdtemp(prefix='pulp_cbc_')
-        solver = pulp.PULP_CBC_CMD(msg=False, tmpDir=_tmpdir)
-    try:
-        status = prob.solve(solver)
-    finally:
-        if _tmpdir is not None:
-            shutil.rmtree(_tmpdir, ignore_errors=True)
+        solver = pulp.PULP_CBC_CMD(msg=False)
+    status = prob.solve(solver)
 
     if pulp.LpStatus[status] != "Optimal":
         status_str = pulp.LpStatus[status]
