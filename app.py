@@ -139,13 +139,12 @@ with st.sidebar:
     st.subheader("📁 Data Files")
     
     # Auto-detect if running locally or on cloud
-    default_data_dir = "data"  # Use data directory
-    if os.path.exists("data/nifty_stocks_data (1).csv"):
+    default_data_dir = "data"
+    if os.path.exists("data/nifty_stocks_data_clean.csv"):
         data_dir = "data"
         st.info("✅ Using local data files")
     else:
-        # Try absolute path (local machine)
-        if os.path.exists("c:\\Users\\kshit\\Personal_Factor_model\\data\\nifty_stocks_data (1).csv"):
+        if os.path.exists("c:\\Users\\kshit\\Personal_Factor_model\\data\\nifty_stocks_data_clean.csv"):
             data_dir = "c:\\Users\\kshit\\Personal_Factor_model\\data"
             st.info("✅ Using local absolute path")
         else:
@@ -159,17 +158,14 @@ with st.sidebar:
         # Load data with proper path handling
         @st.cache_data
         def load_data(data_dir):
-            # Normalize path
             data_dir = os.path.normpath(data_dir)
-            
-            stock_returns = pd.read_csv(os.path.join(data_dir, 'nifty_stocks_data (1).csv'))
+            stock_returns = pd.read_csv(os.path.join(data_dir, 'nifty_stocks_data_clean.csv'))
             index_returns = pd.read_csv(os.path.join(data_dir, 'nifty50_index_data.csv'))
             fama_french = pd.read_csv(os.path.join(data_dir, 'FF_Nifty50.csv'))
-            yearly_tickers = pd.read_csv(os.path.join(data_dir, 'Nifty_50.csv'))
             sector_df = pd.read_csv(os.path.join(data_dir, 'sector_classification.csv'))
-            return stock_returns, index_returns, fama_french, yearly_tickers, sector_df
+            return stock_returns, index_returns, fama_french, sector_df
 
-        stock_returns_data, index_returns_data, fama_french_data, yearly_tickers_data, sector_data = load_data(data_dir)
+        stock_returns_data, index_returns_data, fama_french_data, sector_data = load_data(data_dir)
         ticker_to_sector = dict(zip(sector_data['company'], sector_data['sector']))
         all_sectors = sorted(sector_data['sector'].unique().tolist())
         st.success("✅ Data loaded successfully")
@@ -177,24 +173,34 @@ with st.sidebar:
     except FileNotFoundError as e:
         st.error(f"""
         ❌ Error loading data: {str(e)}
-        
+
         **Data files not found at**: {data_dir}
-        
+
         **Required files:**
-        - nifty_stocks_data (1).csv
+        - nifty_stocks_data_clean.csv
         - nifty50_index_data.csv
         - FF_Nifty50.csv
-        - Nifty_50.csv
-        
-        Make sure all CSV files are in the same directory as this app.
+        - sector_classification.csv
+
+        Make sure all CSV files are in the data directory.
         """)
         st.stop()
     except Exception as e:
         st.error(f"❌ Error loading data: {str(e)}")
         st.stop()
     
+    # Build R_full and ticker_universe once (full-corpus approach)
+    @st.cache_data
+    def _build_universe(stock_returns, lookback, min_obs_val):
+        from utils import build_R_full, build_ticker_universe
+        r_full = build_R_full(stock_returns)
+        start = r_full.index.min().strftime('%Y-%m-%d')
+        end   = r_full.index.max().strftime('%Y-%m-%d')
+        t_uni = build_ticker_universe(r_full, start, end, lookback_months=lookback, min_obs=min_obs_val)
+        return r_full, t_uni
+
     st.divider()
-    
+
     # Backtest Parameters
     st.subheader("📈 Backtest Parameters")
     
@@ -231,9 +237,13 @@ with st.sidebar:
         min_value=1, max_value=12, value=3, step=1,
         help="Rebalance portfolio every N months"
     )
-    
+
+    # Build universe now that lookback_months is defined
+    with st.spinner("Building ticker universe..."):
+        R_full, ticker_universe = _build_universe(stock_returns_data, lookback_months, lookback_months)
+
     st.divider()
-    
+
     # Optimization Parameters
     st.subheader("🎯 Optimization Constraints")
     
@@ -485,14 +495,14 @@ with tab1:
                     stock_returns_data=stock_returns_data,
                     fama_french_data=fama_french_data,
                     index_returns=index_returns_data,
-                    universe_by_year=yearly_tickers_data,
-                    
+                    ticker_universe=ticker_universe,
+
                     oos_start=oos_start,
                     oos_months=oos_months,
                     lookback_months=lookback_months,
                     rebalance_every=rebalance_every,
                     initial_capital=initial_capital,
-                    
+
                     risk_aversion=risk_aversion,
                     K_max=K_max,
                     w_max=w_max,
@@ -721,14 +731,14 @@ with tab3:
                     stock_returns_data=stock_returns_data,
                     fama_french_data=fama_french_data,
                     index_returns=index_returns_data,
-                    universe_by_year=yearly_tickers_data,
-                    
+                    ticker_universe=ticker_universe,
+
                     oos_start=oos_start,
                     oos_months=oos_months,
                     lookback_months=lookback_months,
                     rebalance_every=rebalance_every,
                     initial_capital=initial_capital,
-                    
+
                     risk_aversion=ra,
                     K_max=K_max,
                     w_max=w_max,
@@ -884,12 +894,16 @@ with tab4:
         with st.spinner("Estimating betas and computing ranges (MILP)..."):
             try:
                 from utils import (estimate_betas_asof_nifty,
-                                   compute_achievable_beta_bounds)
+                                   compute_achievable_beta_bounds,
+                                   _filter_tickers_by_history)
 
-                year_sel = pd.Period(oos_start, "M").to_timestamp().year
-                tickers_sel = (
-                    yearly_tickers_data[yearly_tickers_data["Year"] == year_sel]
-                    .drop(columns=["Year"]).iloc[0].dropna().tolist()
+                asof_ts = pd.Timestamp(oos_start) + pd.offsets.MonthEnd(0)
+                tickers_sel = ticker_universe.get(
+                    asof_ts,
+                    _filter_tickers_by_history(
+                        R_full.columns.tolist(), R_full, asof_ts,
+                        lookback_months=lookback_months, min_obs=lookback_months
+                    )
                 )
 
                 betas_sel = estimate_betas_asof_nifty(
@@ -898,18 +912,17 @@ with tab4:
                     asof             = oos_start,
                     tickers_in_window= tickers_sel,
                     lookback_months  = lookback_months,
-                    min_obs          = 24,
+                    min_obs          = lookback_months,
                     use_t_as_last_obs= False,
                 )
 
-                # Build R from stock returns
-                sr = stock_returns_data.copy()
-                sr["Date"] = pd.to_datetime(sr["Date"])
-                asof_dt  = pd.Period(oos_start, "M").to_timestamp(how="end")
-                lb_dt2   = asof_dt - pd.DateOffset(months=lookback_months)
-                sr_win   = sr[(sr["Date"] > lb_dt2) & (sr["Date"] <= asof_dt)]
-                R_sel    = sr_win.pivot(index="Date", columns="Ticker", values="RET")
-                R_sel    = R_sel[R_sel.columns.intersection(tickers_sel)].dropna(axis=1, thresh=24)
+                # Build R from R_full
+                asof_dt = asof_ts
+                lb_dt2  = asof_dt - pd.DateOffset(months=lookback_months)
+                R_sel   = R_full.loc[
+                    (R_full.index > lb_dt2) & (R_full.index <= asof_dt),
+                    [t for t in tickers_sel if t in R_full.columns]
+                ].dropna(axis=1, thresh=lookback_months)
 
                 bounds = compute_achievable_beta_bounds(
                     R          = R_sel,
@@ -998,12 +1011,12 @@ with tab5:
     - **Sensitivity Analysis**: Test multiple risk aversion parameters
     
     ### 📁 Data Structure
-    
+
     Required CSV files in data directory:
-    - `nifty_stocks_data (1).csv`: Daily/monthly stock returns
+    - `nifty_stocks_data_clean.csv`: Monthly stock returns (cleaned)
     - `nifty50_index_data.csv`: Benchmark index returns
     - `FF_Nifty50.csv`: Fama-French factors (MF, SMB, HML, RF)
-    - `Nifty_50.csv`: Available tickers by year
+    - `sector_classification.csv`: Ticker-to-sector mapping
     
     ### ⚠️ Interpretation Guide
     

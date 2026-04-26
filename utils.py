@@ -7,11 +7,63 @@ import pulp
 from scipy import stats
 import warnings
 import time
+import tempfile
+import shutil
 from tqdm.auto import tqdm
 warnings.filterwarnings('ignore')
 
 import numpy as np
 import pandas as pd
+
+
+# ── Universe helpers (full-corpus approach) ──────────────────────────────────
+
+def build_R_full(stock_returns_data: pd.DataFrame) -> pd.DataFrame:
+    return (
+        stock_returns_data
+        .assign(Date=lambda d: pd.to_datetime(d['Date']) + pd.offsets.MonthEnd(0))
+        .pivot(index='Date', columns='Ticker', values='RET')
+        .sort_index()
+    )
+
+
+def _filter_tickers_by_history(
+    tickers: list,
+    R_full: pd.DataFrame,
+    asof: pd.Timestamp,
+    lookback_months: int = 36,
+    min_obs: int = 36,
+) -> list:
+    lookback_start = asof - pd.DateOffset(months=lookback_months)
+    R_win = R_full.loc[
+        (R_full.index > lookback_start) & (R_full.index <= asof),
+        [t for t in tickers if t in R_full.columns]
+    ].copy()
+    enough = R_win.notna().sum() >= min_obs
+    R_win = R_win.loc[:, enough]
+    while len(R_win.columns) > 0:
+        if R_win.dropna().shape[0] >= 12:
+            break
+        R_win = R_win.drop(columns=[R_win.isna().sum().idxmax()])
+    return R_win.columns.tolist()
+
+
+def build_ticker_universe(
+    R_full: pd.DataFrame,
+    start: str,
+    end: str,
+    lookback_months: int = 36,
+    min_obs: int = 36,
+) -> dict:
+    all_tickers = R_full.columns.tolist()
+    months = pd.date_range(start=start, end=end, freq='ME')
+    universe = {}
+    for m in months:
+        universe[m] = _filter_tickers_by_history(
+            all_tickers, R_full, m,
+            lookback_months=lookback_months, min_obs=min_obs
+        )
+    return universe
 
 def estimate_betas_asof_nifty(
     returns_df: pd.DataFrame,
@@ -511,11 +563,16 @@ def optimize_pulp_mad_targetbetas_cardinality(
     else:
         raise ValueError("objective_mode must be 'return_minus_risk' or 'min_risk'")
 
-    # Solve
+    # Solve — unique tmpDir so parallel Optuna trials don't collide on CBC temp files
+    _tmpdir = None
     if solver is None:
-        solver = pulp.PULP_CBC_CMD(msg=False)
-
-    status = prob.solve(solver)
+        _tmpdir = tempfile.mkdtemp(prefix='pulp_cbc_')
+        solver = pulp.PULP_CBC_CMD(msg=False, tmpDir=_tmpdir)
+    try:
+        status = prob.solve(solver)
+    finally:
+        if _tmpdir is not None:
+            shutil.rmtree(_tmpdir, ignore_errors=True)
     if pulp.LpStatus[status] != "Optimal":
         # Compute achievable beta bounds to inform the user
         achievable = compute_achievable_beta_bounds(R, betas_asof, K_max, w_max, solver)
@@ -904,11 +961,16 @@ def optimize_pulp_mad_targetbetas_cardinality(
     else:
         raise ValueError("objective_mode must be 'return_minus_risk' or 'min_risk'")
 
-    # Solve
+    # Solve — unique tmpDir so parallel Optuna trials don't collide on CBC temp files
+    _tmpdir = None
     if solver is None:
-        solver = pulp.PULP_CBC_CMD(msg=False)
-
-    status = prob.solve(solver)
+        _tmpdir = tempfile.mkdtemp(prefix='pulp_cbc_')
+        solver = pulp.PULP_CBC_CMD(msg=False, tmpDir=_tmpdir)
+    try:
+        status = prob.solve(solver)
+    finally:
+        if _tmpdir is not None:
+            shutil.rmtree(_tmpdir, ignore_errors=True)
 
     if pulp.LpStatus[status] != "Optimal":
         status_str = pulp.LpStatus[status]
@@ -1136,8 +1198,9 @@ def check_within_tolerance(exposures: pd.Series, target: dict, tol: dict) -> boo
 def backtest_fixed_window_quarterly_rebalance_on_breach(
     stock_returns_data: pd.DataFrame,    # Date, Ticker, RET (monthly, decimals)
     fama_french_data: pd.DataFrame,      # Date, MF, SMB, HML, RF (monthly, decimals)
-    index_returns,                       # <<< CHANGED >>> accept Series OR DataFrame
-    universe_by_year: dict,              # {year: [tickers]}
+    index_returns,                       # accept Series OR DataFrame
+    universe_by_year: dict | None = None,   # legacy: {year: [tickers]}
+    ticker_universe: dict | None = None,    # preferred: {month_end_ts: [tickers]} from build_ticker_universe()
 
     oos_start: str | pd.Timestamp,       # first OOS month (month-end)
     oos_months: int = 24,
@@ -1237,8 +1300,15 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
     # First portfolio is built at asof = month-end BEFORE first OOS month
     first_asof = _to_month_end(oos_start - pd.DateOffset(months=1))
 
-    # Universe for that year
-    tickers_first = universe_by_year.get(int(first_asof.year), list(R_full.columns))
+    # Universe: prefer ticker_universe (month-keyed) over legacy universe_by_year (year-keyed)
+    def _get_tickers(asof_ts):
+        if ticker_universe is not None:
+            return ticker_universe.get(asof_ts, list(R_full.columns))
+        if universe_by_year is not None:
+            return universe_by_year.get(int(asof_ts.year), list(R_full.columns))
+        return list(R_full.columns)
+
+    tickers_first = _get_tickers(first_asof)
 
     # Build initial weights
     res0 = build_portfolio_asof_pulp(
@@ -1308,7 +1378,7 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
             if show_progress:
                 pbar.set_postfix_str(f"{m.strftime('#%Y-#%m')} | check@{asof.strftime('#%Y-#%m')}")
 
-            tickers_year = universe_by_year.get(int(asof.year), list(R_full.columns))
+            tickers_year = _get_tickers(asof)
 
             betas_asof = estimate_betas_asof_nifty(
                 returns_df=sr,
