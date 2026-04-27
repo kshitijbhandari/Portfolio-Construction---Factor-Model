@@ -1519,7 +1519,9 @@ def run_recommended_backtest(
     K_max: int = 15,
     w_max: float = 0.20,
     initial_capital: float = 100_000,
-    excel_path=None,   # str path OR file-like object (BytesIO from st.file_uploader)
+    excel_path=None,       # str path OR file-like object (BytesIO from st.file_uploader)
+    R_full_prebuilt=None,  # pass pre-built R_full from caller to avoid recomputing
+    ticker_universe_prebuilt=None,  # pass pre-built ticker_universe from caller
 ) -> dict:
     """
     Backtest pulling target betas from beta_search_log.xlsx at each rebalance date.
@@ -1559,14 +1561,21 @@ def run_recommended_backtest(
         raise ValueError(f"No beta log entry on or before {asof.date()}")
 
     # ── Universe ──────────────────────────────────────────────────────────────
-    R_full = build_R_full(stock_returns_data)
-    t_uni = build_ticker_universe(
-        R_full,
-        R_full.index.min().strftime("%Y-%m-%d"),
-        R_full.index.max().strftime("%Y-%m-%d"),
-        lookback_months=lookback_months,
-        min_obs=lookback_months,
-    )
+    if R_full_prebuilt is not None:
+        R_full = R_full_prebuilt
+    else:
+        R_full = build_R_full(stock_returns_data)
+
+    if ticker_universe_prebuilt is not None:
+        t_uni = ticker_universe_prebuilt
+    else:
+        t_uni = build_ticker_universe(
+            R_full,
+            R_full.index.min().strftime("%Y-%m-%d"),
+            R_full.index.max().strftime("%Y-%m-%d"),
+            lookback_months=lookback_months,
+            min_obs=lookback_months,
+        )
 
     # ── Date grid ─────────────────────────────────────────────────────────────
     entry = _to_month_end(oos_start)
@@ -1610,17 +1619,32 @@ def run_recommended_backtest(
             R_full.columns.tolist(), R_full, rb,
             lookback_months=lookback_months, min_obs=lookback_months,
         )
-        res = build_portfolio_asof_pulp(
-            asof=rb,
-            tickers_in_window=tickers,
-            stock_returns_data=sr,
-            fama_french_data=ff,
-            K_max=K_max, w_max=w_max,
-            lookback_months=lookback_months, min_obs=lookback_months,
-            risk_aversion=risk_aversion,
-            target_betas=tb,
-            beta_tolerances={"MF": beta_tol, "SMB": beta_tol, "HML": beta_tol},
-        )
+        if not tickers:
+            raise ValueError(
+                f"No eligible tickers found for {rb.date()} "
+                f"(need {lookback_months} months of history). "
+                "Check your start date or lookback period."
+            )
+        try:
+            res = build_portfolio_asof_pulp(
+                asof=rb,
+                tickers_in_window=tickers,
+                stock_returns_data=sr,
+                fama_french_data=ff,
+                K_max=K_max, w_max=w_max,
+                lookback_months=lookback_months, min_obs=lookback_months,
+                risk_aversion=risk_aversion,
+                target_betas=tb,
+                beta_tolerances={"MF": beta_tol, "SMB": beta_tol, "HML": beta_tol},
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Portfolio optimization failed at {rb.date()} "
+                f"with target betas {tb} (source='{beta_source}'). "
+                f"Universe: {len(tickers)} tickers. "
+                f"Original error: {e}"
+            ) from e
+
         new_w = res["weights"]
         new_w = new_w / new_w.sum()
         w_map[rb] = new_w

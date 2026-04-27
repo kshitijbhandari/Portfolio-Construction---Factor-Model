@@ -445,6 +445,8 @@ The optimizer targets those betas automatically.
                             w_max=w_max,
                             initial_capital=initial_capital,
                             excel_path=_excel_source,
+                            R_full_prebuilt=R_full,
+                            ticker_universe_prebuilt=ticker_universe,
                         )
                         st.session_state.backtest_result = backtest_result
                         st.session_state.backtest_mode   = "recommended"
