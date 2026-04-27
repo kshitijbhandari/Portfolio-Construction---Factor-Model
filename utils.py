@@ -1606,6 +1606,7 @@ def run_recommended_backtest(
     beta_tol: float = 0.30,
     K_max: int = 15,
     w_max: float = 0.20,
+    turnover_cap: float | None = 0.20,
     initial_capital: float = 100_000,
     excel_path=None,       # str path OR file-like object (BytesIO from st.file_uploader)
     R_full_prebuilt=None,  # pass pre-built R_full from caller to avoid recomputing
@@ -1613,7 +1614,9 @@ def run_recommended_backtest(
 ) -> dict:
     """
     Backtest pulling target betas from beta_search_log.xlsx at each rebalance date.
-    beta_source: 'best' (Strategy 1), 'mean' (Strategy 2), 'median' (Strategy 3)
+    beta_source: 'best' (Strategy 1), 'mean' (Strategy 2), 'median' (Strategy 3),
+    'monthly_mean' (Strategy 4 using monthly_beta_stats sheet),
+    or 'mean_past_best_661' (Strategy 5 using 6,6,1 past best-beta recipe).
     excel_path: file path string OR file-like object (e.g. uploaded via Streamlit)
     """
     import os
@@ -1625,20 +1628,60 @@ def run_recommended_backtest(
             f"Beta log not found: {excel_path}. Upload beta_search_log.xlsx or run the Optuna search first."
         )
 
-    log = pd.read_excel(excel_path)
+    xls = pd.ExcelFile(excel_path)
+    log = pd.read_excel(xls, sheet_name=0)
     log["entry_date"] = pd.to_datetime(log["entry_date"]) + pd.offsets.MonthEnd(0)
     log = log.set_index("entry_date").sort_index()
+
+    monthly_stats = None
+    if "monthly_beta_stats" in xls.sheet_names:
+        monthly_stats = pd.read_excel(xls, sheet_name="monthly_beta_stats").copy()
+        if "month" not in monthly_stats.columns:
+            raise ValueError("monthly_beta_stats sheet must contain a 'month' column.")
+        monthly_stats["month"] = monthly_stats["month"].astype(str).str.strip()
+        monthly_stats = monthly_stats.set_index("month")
 
     col_map = {
         "best":   ("best_MF",   "best_SMB",   "best_HML"),
         "mean":   ("MF_mean",   "SMB_mean",   "HML_mean"),
         "median": ("MF_median", "SMB_median", "HML_median"),
+        "monthly_mean": ("MF_mean", "SMB_mean", "HML_mean"),
+        "mean_past_best_661": ("best_MF", "best_SMB", "best_HML"),
     }
     if beta_source not in col_map:
-        raise ValueError("beta_source must be 'best', 'mean', or 'median'")
+        raise ValueError(
+            "beta_source must be 'best', 'mean', 'median', 'monthly_mean', or 'mean_past_best_661'"
+        )
     mf_col, smb_col, hml_col = col_map[beta_source]
 
     def _get_betas(asof):
+        if beta_source == "mean_past_best_661":
+            required_cols = ["best_MF", "best_SMB", "best_HML"]
+            missing = [c for c in required_cols if c not in log.columns]
+            if missing:
+                raise ValueError(f"Strategy 5 requires columns in beta_search_log.xlsx: {missing}")
+            hist = log.loc[log.index < asof, required_cols].copy()
+            if hist.empty:
+                raise ValueError(f"No prior beta history available before {asof.date()}")
+
+            mf_hist = hist["best_MF"].tail(6)
+            smb_hist = hist["best_SMB"].tail(6)
+            prev_row = hist.iloc[-1]
+            return {
+                "MF": float(mf_hist.mean()),
+                "SMB": float(smb_hist.mean()),
+                "HML": float(prev_row["best_HML"]),
+            }
+        if beta_source == "monthly_mean":
+            if monthly_stats is None:
+                raise ValueError(
+                    "Strategy 4 requires a 'monthly_beta_stats' sheet in beta_search_log.xlsx."
+                )
+            month_key = pd.Timestamp(asof).strftime("%b")
+            if month_key not in monthly_stats.index:
+                raise ValueError(f"Month '{month_key}' not found in monthly_beta_stats sheet.")
+            r = monthly_stats.loc[month_key]
+            return {"MF": float(r[mf_col]), "SMB": float(r[smb_col]), "HML": float(r[hml_col])}
         if asof in log.index:
             r = log.loc[asof]
             return {"MF": float(r[mf_col]), "SMB": float(r[smb_col]), "HML": float(r[hml_col])}
@@ -1694,6 +1737,7 @@ def run_recommended_backtest(
     w_map = {}
     tb_map = {}
     achieved_map = {}
+    w_prev = None
 
     sr = stock_returns_data.copy()
     sr["Date"] = pd.to_datetime(sr["Date"]).dt.to_period("M").dt.to_timestamp("M")
@@ -1716,8 +1760,18 @@ def run_recommended_backtest(
         # Try original tolerance, then relax if HiGHS returns infeasible
         res = None
         last_err = None
+        if beta_source == "mean_past_best_661":
+            base_tols = {"MF": 5.0, "SMB": 0.15, "HML": 5.0}
+        else:
+            base_tols = {"MF": beta_tol, "SMB": beta_tol, "HML": beta_tol}
+
         for extra_tol in [0.0, 0.05, 0.10, 0.20]:
             try:
+                cur_tols = {
+                    "MF": base_tols["MF"] + (extra_tol if beta_source != "mean_past_best_661" else 0.0),
+                    "SMB": base_tols["SMB"] + extra_tol,
+                    "HML": base_tols["HML"] + (extra_tol if beta_source != "mean_past_best_661" else 0.0),
+                }
                 res = build_portfolio_asof_pulp(
                     asof=rb,
                     tickers_in_window=tickers,
@@ -1727,7 +1781,9 @@ def run_recommended_backtest(
                     lookback_months=lookback_months, min_obs=lookback_months,
                     risk_aversion=risk_aversion,
                     target_betas=tb,
-                    beta_tolerances={"MF": beta_tol + extra_tol, "SMB": beta_tol + extra_tol, "HML": beta_tol + extra_tol},
+                    beta_tolerances=cur_tols,
+                    w_prev=w_prev,
+                    turnover_cap=turnover_cap if w_prev is not None else None,
                     beta_target_mode="soft",
                     beta_penalty_gamma=1.0,
                     scenario_missing="drop",
@@ -1751,6 +1807,7 @@ def run_recommended_backtest(
         new_w = res["weights"]
         new_w = new_w / new_w.sum()
         w_map[rb] = new_w
+        w_prev = new_w.copy()
 
         betas_rb = estimate_betas_asof_nifty(
             returns_df=sr, factors_df=ff, asof=rb, tickers_in_window=tickers,
