@@ -1391,25 +1391,42 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
                 if show_progress:
                     pbar.set_postfix_str(f"{m.strftime('#%Y-#%m')} | REBAL@{asof.strftime('#%Y-#%m')}")
 
-                res_new = build_portfolio_asof_pulp(
-                    asof=asof,
-                    tickers_in_window=tickers_year,
-                    stock_returns_data=sr,
-                    fama_french_data=ff,
-                    lookback_months=lookback_months,
-                    min_obs=min_obs,
-                    use_t_as_last_obs=use_t_as_last_obs,
-                    # objective=objective,
-                    risk_aversion=risk_aversion,
-                    K_max=K_max,
-                    w_max=w_max,
-                    target_betas=target_betas,
-                    beta_tolerances=beta_tolerances,
-                    w_prev=w_prev,
-                    turnover_cap=turnover_cap,
-                    sector_constraints=sector_constraints,
-                    ticker_to_sector=ticker_to_sector,
-                )
+                _res_new = None
+                _bt_betas = beta_tolerances.copy() if beta_tolerances else {"MF": 0.10, "SMB": 0.10, "HML": 0.10}
+                _bt_last_err = None
+                for _extra in [0.0, 0.05, 0.10, 0.20]:
+                    _tols = {k: v + _extra for k, v in _bt_betas.items()}
+                    try:
+                        _res_new = build_portfolio_asof_pulp(
+                            asof=asof,
+                            tickers_in_window=tickers_year,
+                            stock_returns_data=sr,
+                            fama_french_data=ff,
+                            lookback_months=lookback_months,
+                            min_obs=min_obs,
+                            use_t_as_last_obs=use_t_as_last_obs,
+                            risk_aversion=risk_aversion,
+                            K_max=K_max,
+                            w_max=w_max,
+                            target_betas=target_betas,
+                            beta_tolerances=_tols,
+                            w_prev=w_prev,
+                            turnover_cap=turnover_cap,
+                            sector_constraints=sector_constraints,
+                            ticker_to_sector=ticker_to_sector,
+                        )
+                        break
+                    except Exception as _e:
+                        _bt_last_err = _e
+                        if "infeasible" not in str(_e).lower() and "infeasible" not in repr(_e).lower():
+                            raise
+                        continue
+                if _res_new is None:
+                    raise RuntimeError(
+                        f"Optimization infeasible at {asof.date()} even after tolerance relaxation. "
+                        f"Error: {_bt_last_err}"
+                    ) from _bt_last_err
+                res_new = _res_new
                 w = res_new["weights"].copy()
                 w_prev = w.copy()
                 did_rebalance = True
@@ -1625,25 +1642,37 @@ def run_recommended_backtest(
                 f"(need {lookback_months} months of history). "
                 "Check your start date or lookback period."
             )
-        try:
-            res = build_portfolio_asof_pulp(
-                asof=rb,
-                tickers_in_window=tickers,
-                stock_returns_data=sr,
-                fama_french_data=ff,
-                K_max=K_max, w_max=w_max,
-                lookback_months=lookback_months, min_obs=lookback_months,
-                risk_aversion=risk_aversion,
-                target_betas=tb,
-                beta_tolerances={"MF": beta_tol, "SMB": beta_tol, "HML": beta_tol},
-            )
-        except Exception as e:
+        # Try original tolerance, then relax if CBC returns infeasible (solver non-determinism across platforms)
+        res = None
+        last_err = None
+        for extra_tol in [0.0, 0.05, 0.10, 0.20]:
+            try:
+                res = build_portfolio_asof_pulp(
+                    asof=rb,
+                    tickers_in_window=tickers,
+                    stock_returns_data=sr,
+                    fama_french_data=ff,
+                    K_max=K_max, w_max=w_max,
+                    lookback_months=lookback_months, min_obs=lookback_months,
+                    risk_aversion=risk_aversion,
+                    target_betas=tb,
+                    beta_tolerances={"MF": beta_tol + extra_tol, "SMB": beta_tol + extra_tol, "HML": beta_tol + extra_tol},
+                )
+                break  # success
+            except Exception as e:
+                last_err = e
+                if "infeasible" not in str(e).lower() and "infeasible" not in repr(e).lower():
+                    raise  # non-infeasibility error — don't retry
+                # infeasible: try with wider tolerance
+                continue
+        if res is None:
             raise ValueError(
                 f"Portfolio optimization failed at {rb.date()} "
-                f"with target betas {tb} (source='{beta_source}'). "
+                f"with target betas {tb} (source='{beta_source}') even after "
+                f"relaxing tolerance to ±{beta_tol + 0.20:.2f}. "
                 f"Universe: {len(tickers)} tickers. "
-                f"Original error: {e}"
-            ) from e
+                f"Original error: {last_err}"
+            ) from last_err
 
         new_w = res["weights"]
         new_w = new_w / new_w.sum()
