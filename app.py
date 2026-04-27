@@ -423,8 +423,10 @@ The optimizer targets those betas automatically.
 
         # Resolve excel source: local file or uploaded
         _local_candidates = [
+            os.path.join(data_dir, "beta_search_log.xlsx"),
             "beta_search_log.xlsx",
             os.path.join(os.path.dirname(__file__), "beta_search_log.xlsx"),
+            os.path.join(os.path.dirname(__file__), "data", "beta_search_log.xlsx"),
         ]
         _local_path = next((p for p in _local_candidates if os.path.exists(p)), None)
 
