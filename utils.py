@@ -1199,7 +1199,7 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
     # optimization knobs (passed into your builder)
     objective: str = "return_minus_risk",
     risk_aversion: float = 5.0,
-    K_max: int = 15,
+    K_max: int = 20,
     w_max: float = 0.20,
     min_obs: int = 36,
     use_t_as_last_obs: bool = False,
@@ -1549,7 +1549,7 @@ def run_recommended_backtest(
     risk_aversion: float = 1.0,
     lookback_months: int = 36,
     beta_tol: float = 0.30,
-    K_max: int = 15,
+    K_max: int = 20,
     w_max: float = 0.20,
     initial_capital: float = 100_000,
     excel_path=None,       # str path OR file-like object (BytesIO from st.file_uploader)
