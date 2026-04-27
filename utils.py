@@ -13,7 +13,13 @@ from tqdm.auto import tqdm
 warnings.filterwarnings('ignore')
 
 def _make_solver():
-    """Use HiGHS if available (e.g. Streamlit Cloud), fall back to CBC locally."""
+    """Use HiGHS if available, fall back to CBC."""
+    try:
+        s = pulp.HiGHS(msg=False)
+        if s.available():
+            return s
+    except Exception:
+        pass
     try:
         s = pulp.HiGHS_CMD(msg=False)
         if s.available():
@@ -826,6 +832,9 @@ def optimize_pulp_mad_targetbetas_cardinality(
     solver: pulp.LpSolver | None = None,
     sector_constraints: dict | None = None,
     ticker_to_sector: dict | None = None,
+    beta_target_mode: str = "hard",
+    beta_penalty_gamma: float = 1.0,
+    scenario_missing: str = "fill",
 ) -> pd.Series:
     """
     MILP (PuLP):
@@ -851,13 +860,21 @@ def optimize_pulp_mad_targetbetas_cardinality(
     if missing:
         raise ValueError(f"betas_asof missing columns: {sorted(missing)}")
 
+    if beta_target_mode not in {"hard", "soft"}:
+        raise ValueError("beta_target_mode must be 'hard' or 'soft'")
+    if scenario_missing not in {"fill", "drop"}:
+        raise ValueError("scenario_missing must be 'fill' or 'drop'")
+
     # Decide universe tickers
     tickers = list(mu.index) if mu is not None else list(R.columns)
 
     # Align scenario returns — fill missing with 0 rather than dropping rows,
     # keeping all scenario months so HiGHS has a well-conditioned problem on all platforms
     R = R.copy()
-    R = R[tickers].fillna(0.0)
+    if scenario_missing == "drop":
+        R = R[tickers].dropna(axis=0, how="any")
+    else:
+        R = R[tickers].fillna(0.0)
     if R.shape[0] < 12:
         raise ValueError("Not enough scenario months in R (need ~12+).")
 
@@ -919,13 +936,21 @@ def optimize_pulp_mad_targetbetas_cardinality(
             if max_k is not None:
                 prob += sec_z <= int(max_k), f"sector_max_{sector}"
 
-    # Target beta bands
+    # Target beta bands or soft beta tracking.
+    beta_penalty_term = 0.0
     for k in factors:
         expr = pulp.lpSum(w[t] * betas_by_ticker[t][k] for t in tickers)
         tgt = float(target_betas[k])
         tol = float(beta_tolerances.get(k, 0.0))
-        prob += expr >= (tgt - tol)
-        prob += expr <= (tgt + tol)
+        if beta_target_mode == "hard":
+            prob += expr >= (tgt - tol)
+            prob += expr <= (tgt + tol)
+        elif beta_penalty_gamma > 0:
+            scale = tol if tol > 0 else 0.10
+            dpos_k = pulp.LpVariable(f"beta_dev_pos_{k}", lowBound=0)
+            dneg_k = pulp.LpVariable(f"beta_dev_neg_{k}", lowBound=0)
+            prob += expr - tgt == dpos_k - dneg_k
+            beta_penalty_term += (dpos_k + dneg_k) / scale
 
     # MAD risk
     T = R.shape[0]
@@ -957,12 +982,16 @@ def optimize_pulp_mad_targetbetas_cardinality(
 
     # Objective
     if objective_mode == "min_risk":
-        prob += -mad
+        prob += -mad - float(beta_penalty_gamma) * beta_penalty_term
     elif objective_mode == "return_minus_risk":
         if mu is None:
             raise ValueError("mu must be provided when objective_mode='return_minus_risk'")
         mu_vals = mu.reindex(tickers).astype(float).to_dict()
-        prob += pulp.lpSum(mu_vals[t] * w[t] for t in tickers) - float(risk_aversion) * mad
+        prob += (
+            pulp.lpSum(mu_vals[t] * w[t] for t in tickers)
+            - float(risk_aversion) * mad
+            - float(beta_penalty_gamma) * beta_penalty_term
+        )
     else:
         raise ValueError("objective_mode must be 'return_minus_risk' or 'min_risk'")
 
@@ -1023,6 +1052,9 @@ def build_portfolio_asof_pulp(
     objective_mode: str = "return_minus_risk",
     sector_constraints: dict | None = None,
     ticker_to_sector: dict | None = None,
+    beta_target_mode: str = "hard",
+    beta_penalty_gamma: float = 1.0,
+    scenario_missing: str = "fill",
 ) -> dict:
     """
     End-to-end portfolio build at one rebalance month 'asof' using PuLP MILP (MAD risk + target betas + max K).
@@ -1103,6 +1135,9 @@ def build_portfolio_asof_pulp(
         objective_mode=objective_mode,
         sector_constraints=sector_constraints,
         ticker_to_sector=ticker_to_sector,
+        beta_target_mode=beta_target_mode,
+        beta_penalty_gamma=beta_penalty_gamma,
+        scenario_missing=scenario_missing,
     )
 
     return {
@@ -1167,6 +1202,16 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 def _to_month_end(x):
+    if isinstance(x, str):
+        s = x.strip()
+        if "/" in s:
+            parts = s.split("/")
+            if len(parts) == 2 and all(p.strip().isdigit() for p in parts):
+                month = int(parts[0])
+                year = int(parts[1])
+                if year < 100:
+                    year += 2000
+                return pd.Timestamp(year=year, month=month, day=1).to_period("M").to_timestamp("M")
     return pd.to_datetime(x).to_period("M").to_timestamp("M")
 
 def portfolio_exposures_from_betas(weights: pd.Series,
@@ -1559,7 +1604,7 @@ def run_recommended_backtest(
     risk_aversion: float = 1.0,
     lookback_months: int = 36,
     beta_tol: float = 0.30,
-    K_max: int = 20,
+    K_max: int = 15,
     w_max: float = 0.20,
     initial_capital: float = 100_000,
     excel_path=None,       # str path OR file-like object (BytesIO from st.file_uploader)
@@ -1683,6 +1728,9 @@ def run_recommended_backtest(
                     risk_aversion=risk_aversion,
                     target_betas=tb,
                     beta_tolerances={"MF": beta_tol + extra_tol, "SMB": beta_tol + extra_tol, "HML": beta_tol + extra_tol},
+                    beta_target_mode="soft",
+                    beta_penalty_gamma=1.0,
+                    scenario_missing="drop",
                 )
                 break  # success
             except Exception as e:

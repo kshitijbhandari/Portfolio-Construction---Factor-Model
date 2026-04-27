@@ -221,7 +221,7 @@ with st.sidebar:
         # Fixed defaults for recommended mode
         lookback_months  = 36
         rebalance_every  = 3
-        K_max            = 20
+        K_max            = 15
         w_max            = 0.20
         risk_aversion    = 1.0
         target_betas     = None
