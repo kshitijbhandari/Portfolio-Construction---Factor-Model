@@ -1325,6 +1325,7 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
     monthly_strategy_rets = []
     monthly_index_rets = []
     rebalance_log = {}  # keyed by rebalance asof date
+    running_value = initial_capital  # track portfolio value for dollar turnover
 
     # We will check/rebalance at quarter boundaries:
     check_asofs = []
@@ -1360,6 +1361,7 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
         prev_month_end = _to_month_end(m - pd.DateOffset(months=1))
         if prev_month_end in check_set:
             asof = prev_month_end
+            w_before_rebalance = w.copy()  # snapshot before any rebalance
 
             # <<< ADDED >>> show we're doing a check
             if show_progress:
@@ -1435,13 +1437,26 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
                     f"{m.strftime('#%Y-#%m')} | {decision}@{asof.strftime('#%Y-#%m')} | within={within}"
                 )
 
+            if did_rebalance:
+                all_t = w.index.union(w_before_rebalance.index)
+                turnover_frac = float(
+                    (w.reindex(all_t).fillna(0) - w_before_rebalance.reindex(all_t).fillna(0)).abs().sum()
+                )
+                dollar_turnover = round(turnover_frac * running_value, 2)
+            else:
+                turnover_frac = 0.0
+                dollar_turnover = 0.0
+
             rebalance_log[str(asof.date())] = {
                 "asof": asof,
                 "within_tolerance": within,
                 "rebalanced": did_rebalance,
                 "exposure_before_or_current": current_exp,
                 "exposure_after": exp_after,
-                "weights": w
+                "weights": w,
+                "portfolio_value": round(running_value, 2),
+                "turnover_pct": f"{turnover_frac*100:.1f}%",
+                "dollar_turnover": dollar_turnover,
             }
 
         # Realized portfolio return for month m
@@ -1461,6 +1476,7 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
 
         monthly_strategy_rets.append((m, rp))
         monthly_index_rets.append((m, ri))
+        running_value *= (1 + rp)
 
     strat = pd.Series(
         [r for _, r in monthly_strategy_rets],
@@ -1478,15 +1494,6 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
     strat_value = initial_capital * (1 + strat).cumprod()
     bench_value = initial_capital * (1 + bench).cumprod()
 
-    # Plot
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(strat_value.index, strat_value.values, label="Customized Portfolio")
-    ax.plot(bench_value.index, bench_value.values, label="Nifty 50")
-    ax.set_title("OOS Backtest: Strategy vs Index (Value)")
-    ax.set_ylabel("Portfolio Value ($)")
-    ax.grid(True)
-    ax.legend()
-
     return {
         "oos_start": oos_start,
         "oos_end": oos_end,
@@ -1495,6 +1502,210 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
         "strategy_value": strat_value,
         "index_value": bench_value,
         "rebalance_log": rebalance_log,
-        "figure": fig
     }
 
+
+def run_recommended_backtest(
+    stock_returns_data: pd.DataFrame,
+    fama_french_data: pd.DataFrame,
+    index_returns,
+    oos_start: str,
+    oos_months: int = 24,
+    beta_source: str = "best",
+    rebalance_every: int = 3,
+    risk_aversion: float = 1.0,
+    lookback_months: int = 36,
+    beta_tol: float = 0.30,
+    K_max: int = 15,
+    w_max: float = 0.20,
+    initial_capital: float = 100_000,
+    excel_path: str = "beta_search_log.xlsx",
+) -> dict:
+    """
+    Backtest pulling target betas from beta_search_log.xlsx at each rebalance date.
+    beta_source: 'best' (Strategy 1), 'mean' (Strategy 2), 'median' (Strategy 3)
+    """
+    import os
+
+    if not os.path.exists(excel_path):
+        raise FileNotFoundError(
+            f"Beta log not found: {excel_path}. Run the Optuna beta search first."
+        )
+
+    log = pd.read_excel(excel_path)
+    log["entry_date"] = pd.to_datetime(log["entry_date"]) + pd.offsets.MonthEnd(0)
+    log = log.set_index("entry_date").sort_index()
+
+    col_map = {
+        "best":   ("best_MF",   "best_SMB",   "best_HML"),
+        "mean":   ("MF_mean",   "SMB_mean",   "HML_mean"),
+        "median": ("MF_median", "SMB_median", "HML_median"),
+    }
+    if beta_source not in col_map:
+        raise ValueError("beta_source must be 'best', 'mean', or 'median'")
+    mf_col, smb_col, hml_col = col_map[beta_source]
+
+    def _get_betas(asof):
+        if asof in log.index:
+            r = log.loc[asof]
+            return {"MF": float(r[mf_col]), "SMB": float(r[smb_col]), "HML": float(r[hml_col])}
+        past = log.index[log.index <= asof]
+        if len(past):
+            r = log.loc[past[-1]]
+            return {"MF": float(r[mf_col]), "SMB": float(r[smb_col]), "HML": float(r[hml_col])}
+        raise ValueError(f"No beta log entry on or before {asof.date()}")
+
+    # ── Universe ──────────────────────────────────────────────────────────────
+    R_full = build_R_full(stock_returns_data)
+    t_uni = build_ticker_universe(
+        R_full,
+        R_full.index.min().strftime("%Y-%m-%d"),
+        R_full.index.max().strftime("%Y-%m-%d"),
+        lookback_months=lookback_months,
+        min_obs=lookback_months,
+    )
+
+    # ── Date grid ─────────────────────────────────────────────────────────────
+    entry = _to_month_end(oos_start)
+    forward_end = _to_month_end(entry + pd.DateOffset(months=oos_months))
+
+    rebalance_dates = []
+    cur = entry
+    while cur <= forward_end:
+        rd = _to_month_end(cur)
+        if rd <= forward_end:
+            rebalance_dates.append(rd)
+        cur = _to_month_end(cur + pd.DateOffset(months=rebalance_every))
+    rebalance_dates = sorted(set(rebalance_dates))
+
+    all_months_grid = [m for m in R_full.index if entry < m <= forward_end]
+
+    # ── Normalize index returns ───────────────────────────────────────────────
+    if isinstance(index_returns, pd.DataFrame):
+        idx_s = index_returns.copy()
+        idx_s["Date"] = pd.to_datetime(idx_s["Date"]) + pd.offsets.MonthEnd(0)
+        idx_s = idx_s.set_index("Date")["MonthlyReturn"].astype(float)
+    else:
+        idx_s = index_returns.copy()
+        idx_s.index = pd.to_datetime(idx_s.index) + pd.offsets.MonthEnd(0)
+        idx_s = idx_s.astype(float)
+
+    # ── Phase 1: build portfolios at each rebalance date ─────────────────────
+    w_map = {}
+    tb_map = {}
+    achieved_map = {}
+
+    sr = stock_returns_data.copy()
+    sr["Date"] = pd.to_datetime(sr["Date"]).dt.to_period("M").dt.to_timestamp("M")
+    ff = fama_french_data.copy()
+    ff["Date"] = pd.to_datetime(ff["Date"]).dt.to_period("M").dt.to_timestamp("M")
+
+    for rb in rebalance_dates:
+        tb = _get_betas(rb)
+        tb_map[rb] = tb
+        tickers = t_uni.get(rb) or _filter_tickers_by_history(
+            R_full.columns.tolist(), R_full, rb,
+            lookback_months=lookback_months, min_obs=lookback_months,
+        )
+        res = build_portfolio_asof_pulp(
+            asof=rb,
+            tickers_in_window=tickers,
+            stock_returns_data=sr,
+            fama_french_data=ff,
+            K_max=K_max, w_max=w_max,
+            lookback_months=lookback_months, min_obs=lookback_months,
+            risk_aversion=risk_aversion,
+            target_betas=tb,
+            beta_tolerances={"MF": beta_tol, "SMB": beta_tol, "HML": beta_tol},
+        )
+        new_w = res["weights"]
+        new_w = new_w / new_w.sum()
+        w_map[rb] = new_w
+
+        betas_rb = estimate_betas_asof_nifty(
+            returns_df=sr, factors_df=ff, asof=rb, tickers_in_window=tickers,
+            lookback_months=lookback_months, min_obs=lookback_months,
+            use_t_as_last_obs=False,
+        )
+        achieved = {}
+        for f in ["MF", "SMB", "HML"]:
+            bdf = betas_rb.set_index("Ticker")[f"beta_{f}"].reindex(new_w.index).fillna(0)
+            achieved[f] = round(float((bdf * new_w).sum()), 4)
+        achieved_map[rb] = achieved
+
+    # ── Phase 2: monthly returns + portfolio value at each rebalance ──────────
+    monthly_rets = []
+    running_value = initial_capital
+    value_at_rb = {rebalance_dates[0]: initial_capital}
+
+    for m in all_months_grid:
+        active_rb = None
+        for rb in reversed(rebalance_dates):
+            if rb <= m:
+                active_rb = rb
+                break
+        if active_rb is None:
+            active_rb = rebalance_dates[0]
+
+        th = w_map[active_rb].index.intersection(R_full.columns)
+        rp = float((R_full.loc[m, th].fillna(0) * w_map[active_rb].loc[th]).sum())
+        monthly_rets.append((m, rp))
+        running_value *= (1 + rp)
+
+        next_m = m + pd.offsets.MonthEnd(1)
+        if next_m in rebalance_dates:
+            value_at_rb[next_m] = running_value
+
+    # ── Phase 3: build rebalance_log with dollar turnover ────────────────────
+    rebalance_log = {}
+    w_prev = None
+    for rb in rebalance_dates:
+        new_w = w_map[rb]
+        port_val = value_at_rb.get(rb, initial_capital)
+
+        if w_prev is not None:
+            all_t = new_w.index.union(w_prev.index)
+            turnover_frac = float(
+                (new_w.reindex(all_t).fillna(0) - w_prev.reindex(all_t).fillna(0)).abs().sum()
+            )
+            dollar_turnover = round(turnover_frac * port_val, 2)
+        else:
+            turnover_frac = None
+            dollar_turnover = None
+
+        rebalance_log[str(rb.date())] = {
+            "target_betas": tb_map[rb],
+            "achieved_betas": achieved_map[rb],
+            "weights": new_w.round(4).to_dict(),
+            "portfolio_value": round(port_val, 2),
+            "turnover_pct": f"{turnover_frac*100:.1f}%" if turnover_frac is not None else "initial",
+            "dollar_turnover": dollar_turnover if dollar_turnover is not None else "initial",
+        }
+        w_prev = new_w
+
+    # ── Build return series ───────────────────────────────────────────────────
+    strat = pd.Series(
+        [r for _, r in monthly_rets],
+        index=pd.DatetimeIndex([m for m, _ in monthly_rets]),
+        name="StrategyRet",
+    )
+    bench_vals = [float(idx_s.get(m, 0)) for m, _ in monthly_rets]
+    bench = pd.Series(
+        bench_vals,
+        index=pd.DatetimeIndex([m for m, _ in monthly_rets]),
+        name="IndexRet",
+    )
+
+    strat_value = initial_capital * (1 + strat).cumprod()
+    bench_value = initial_capital * (1 + bench).cumprod()
+
+    return {
+        "oos_start": entry,
+        "oos_end": forward_end,
+        "strategy_returns": strat,
+        "index_returns": bench,
+        "strategy_value": strat_value,
+        "index_value": bench_value,
+        "rebalance_log": rebalance_log,
+        "beta_source": beta_source,
+    }
