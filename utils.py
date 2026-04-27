@@ -278,7 +278,7 @@ def compute_achievable_beta_bounds(
     need_cols = ["Ticker", "beta_MF", "beta_SMB", "beta_HML"]
 
     if solver is None:
-        solver_use = pulp.PULP_CBC_CMD(msg=False)
+        solver_use = pulp.HiGHS_CMD(msg=False)
     else:
         solver_use = solver
 
@@ -364,7 +364,7 @@ def compute_conditional_beta_bounds(
     need_cols = ["Ticker", "beta_MF", "beta_SMB", "beta_HML"]
 
     if solver is None:
-        solver_use = pulp.PULP_CBC_CMD(msg=False)
+        solver_use = pulp.HiGHS_CMD(msg=False)
     else:
         solver_use = solver
 
@@ -565,7 +565,7 @@ def optimize_pulp_mad_targetbetas_cardinality(
 
     # Solve
     if solver is None:
-        solver = pulp.PULP_CBC_CMD(msg=False)
+        solver = pulp.HiGHS_CMD(msg=False)
     status = prob.solve(solver)
     if pulp.LpStatus[status] != "Optimal":
         # Compute achievable beta bounds to inform the user
@@ -615,7 +615,7 @@ def debug_optimization_failure(
     w_min_if_selected: float = 0.0,
     turnover_cap: float | None = None,
     w_prev: pd.Series | None = None,
-    solver_name: str = "CBC",
+    solver_name: str = "HiGHS",
     objective_mode: str = "return_minus_risk",
     # bounds functions are optional (pass if you have them)
     compute_1d_bounds_fn=None,
@@ -845,7 +845,7 @@ def optimize_pulp_mad_targetbetas_cardinality(
     tickers = list(mu.index) if mu is not None else list(R.columns)
 
     # Align scenario returns — fill missing with 0 rather than dropping rows,
-    # keeping all scenario months so CBC has a well-conditioned problem on all platforms
+    # keeping all scenario months so HiGHS has a well-conditioned problem on all platforms
     R = R.copy()
     R = R[tickers].fillna(0.0)
     if R.shape[0] < 12:
@@ -958,7 +958,7 @@ def optimize_pulp_mad_targetbetas_cardinality(
 
     # Solve
     if solver is None:
-        solver = pulp.PULP_CBC_CMD(msg=False)
+        solver = pulp.HiGHS_CMD(msg=False)
     status = prob.solve(solver)
 
     if pulp.LpStatus[status] != "Optimal":
@@ -1298,7 +1298,7 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
 
     tickers_first = _get_tickers(first_asof)
 
-    # Build initial weights — retry with relaxed tolerance on cross-platform CBC infeasibility
+    # Build initial weights — retry with relaxed tolerance on cross-platform solver infeasibility
     res0 = None
     _bt0_last_err = None
     for _extra0 in [0.0, 0.05, 0.10, 0.20]:
@@ -1658,7 +1658,7 @@ def run_recommended_backtest(
                 f"(need {lookback_months} months of history). "
                 "Check your start date or lookback period."
             )
-        # Try original tolerance, then relax if CBC returns infeasible (solver non-determinism across platforms)
+        # Try original tolerance, then relax if HiGHS returns infeasible
         res = None
         last_err = None
         for extra_tol in [0.0, 0.05, 0.10, 0.20]:

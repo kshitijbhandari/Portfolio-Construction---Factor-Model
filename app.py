@@ -943,7 +943,7 @@ This application implements a portfolio optimization framework based on the
 ### 📊 Key Features
 
 - **Rolling Beta Estimation**: 36-month rolling window OLS regression
-- **MILP Optimization**: Mixed-Integer Linear Programming via PuLP/CBC solver
+- **MILP Optimization**: Mixed-Integer Linear Programming via PuLP/HiGHS solver
 - **Turnover Tracking**: Dollar trading volume shown for every rebalance
 - **Full-Corpus Universe**: Any ticker with 36+ months history is eligible
 
