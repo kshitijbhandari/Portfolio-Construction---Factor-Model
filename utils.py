@@ -1519,17 +1519,20 @@ def run_recommended_backtest(
     K_max: int = 15,
     w_max: float = 0.20,
     initial_capital: float = 100_000,
-    excel_path: str = "beta_search_log.xlsx",
+    excel_path=None,   # str path OR file-like object (BytesIO from st.file_uploader)
 ) -> dict:
     """
     Backtest pulling target betas from beta_search_log.xlsx at each rebalance date.
     beta_source: 'best' (Strategy 1), 'mean' (Strategy 2), 'median' (Strategy 3)
+    excel_path: file path string OR file-like object (e.g. uploaded via Streamlit)
     """
     import os
 
-    if not os.path.exists(excel_path):
+    if excel_path is None:
+        raise ValueError("Provide excel_path (file path or uploaded file object).")
+    if isinstance(excel_path, str) and not os.path.exists(excel_path):
         raise FileNotFoundError(
-            f"Beta log not found: {excel_path}. Run the Optuna beta search first."
+            f"Beta log not found: {excel_path}. Upload beta_search_log.xlsx or run the Optuna search first."
         )
 
     log = pd.read_excel(excel_path)
