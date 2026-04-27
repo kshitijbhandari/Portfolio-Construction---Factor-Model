@@ -12,6 +12,16 @@ import shutil
 from tqdm.auto import tqdm
 warnings.filterwarnings('ignore')
 
+def _make_solver():
+    """Use HiGHS if available (e.g. Streamlit Cloud), fall back to CBC locally."""
+    try:
+        s = pulp.HiGHS_CMD(msg=False)
+        if s.available():
+            return s
+    except Exception:
+        pass
+    return pulp.PULP_CBC_CMD(msg=False)
+
 import numpy as np
 import pandas as pd
 
@@ -278,7 +288,7 @@ def compute_achievable_beta_bounds(
     need_cols = ["Ticker", "beta_MF", "beta_SMB", "beta_HML"]
 
     if solver is None:
-        solver_use = pulp.HiGHS_CMD(msg=False)
+        solver_use = _make_solver()
     else:
         solver_use = solver
 
@@ -364,7 +374,7 @@ def compute_conditional_beta_bounds(
     need_cols = ["Ticker", "beta_MF", "beta_SMB", "beta_HML"]
 
     if solver is None:
-        solver_use = pulp.HiGHS_CMD(msg=False)
+        solver_use = _make_solver()
     else:
         solver_use = solver
 
@@ -565,7 +575,7 @@ def optimize_pulp_mad_targetbetas_cardinality(
 
     # Solve
     if solver is None:
-        solver = pulp.HiGHS_CMD(msg=False)
+        solver = _make_solver()
     status = prob.solve(solver)
     if pulp.LpStatus[status] != "Optimal":
         # Compute achievable beta bounds to inform the user
@@ -958,7 +968,7 @@ def optimize_pulp_mad_targetbetas_cardinality(
 
     # Solve
     if solver is None:
-        solver = pulp.HiGHS_CMD(msg=False)
+        solver = _make_solver()
     status = prob.solve(solver)
 
     if pulp.LpStatus[status] != "Optimal":
