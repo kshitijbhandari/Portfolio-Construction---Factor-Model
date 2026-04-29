@@ -1760,8 +1760,12 @@ def run_recommended_backtest(
         # Try original tolerance, then relax if HiGHS returns infeasible
         res = None
         last_err = None
-        if beta_source == "mean_past_best_661":
-            base_tols = {"MF": 5.0, "SMB": 0.15, "HML": 5.0}
+        if beta_source == "monthly_mean":
+            # Match model.ipynb Strategy 4 auto_backtest default.
+            base_tols = {"MF": 5.0, "SMB": 5.0, "HML": 5.0}
+        elif beta_source == "mean_past_best_661":
+            # Match model.ipynb Strategy 5 call: auto_backtest_strategy5(entry, smb_tol=5).
+            base_tols = {"MF": 5.0, "SMB": 5.0, "HML": 5.0}
         else:
             base_tols = {"MF": beta_tol, "SMB": beta_tol, "HML": beta_tol}
 
