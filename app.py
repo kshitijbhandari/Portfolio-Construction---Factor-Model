@@ -796,10 +796,47 @@ with tab7:
         if "comparison_results" in st.session_state:
             comparison_results = st.session_state["comparison_results"]
 
+            style_cycle = [
+                {"linestyle": "-",  "marker": "o"},
+                {"linestyle": "--", "marker": "s"},
+                {"linestyle": "-.", "marker": "^"},
+                {"linestyle": ":",  "marker": "D"},
+                {"linestyle": "-",  "marker": "x"},
+                {"linestyle": "--", "marker": "v"},
+            ]
+
+            value_series = {
+                label: bt["strategy_value"].astype(float).round(8)
+                for label, bt in comparison_results.items()
+            }
+            overlapping = []
+            labels = list(value_series.keys())
+            for i, left in enumerate(labels):
+                for right in labels[i + 1:]:
+                    aligned = pd.concat([value_series[left], value_series[right]], axis=1).dropna()
+                    if not aligned.empty and np.allclose(aligned.iloc[:, 0], aligned.iloc[:, 1], rtol=0, atol=1e-8):
+                        overlapping.append(f"{left} and {right}")
+            if overlapping:
+                st.info(
+                    "Some selected strategies have identical portfolio paths, so their lines overlap exactly: "
+                    + "; ".join(overlapping)
+                )
+
             st.subheader("Portfolio Value")
             fig, ax = plt.subplots(figsize=(12, 6))
-            for label, bt in comparison_results.items():
-                ax.plot(bt["strategy_value"].index, bt["strategy_value"].values, linewidth=2, label=label)
+            for i, (label, bt) in enumerate(comparison_results.items()):
+                style = style_cycle[i % len(style_cycle)]
+                ax.plot(
+                    bt["strategy_value"].index,
+                    bt["strategy_value"].values,
+                    linewidth=2,
+                    label=label,
+                    linestyle=style["linestyle"],
+                    marker=style["marker"],
+                    markersize=4,
+                    markevery=max(1, len(bt["strategy_value"]) // 8),
+                    alpha=0.9,
+                )
             first_bt = next(iter(comparison_results.values()))
             ax.plot(first_bt["index_value"].index, first_bt["index_value"].values,
                     linewidth=2, linestyle="--", color="black", label="Nifty 50")
@@ -812,9 +849,20 @@ with tab7:
 
             st.subheader("Cumulative Returns")
             fig, ax = plt.subplots(figsize=(12, 5))
-            for label, bt in comparison_results.items():
+            for i, (label, bt) in enumerate(comparison_results.items()):
+                style = style_cycle[i % len(style_cycle)]
                 cum = (1 + bt["strategy_returns"]).cumprod() - 1
-                ax.plot(cum.index, cum.values * 100, linewidth=2, label=label)
+                ax.plot(
+                    cum.index,
+                    cum.values * 100,
+                    linewidth=2,
+                    label=label,
+                    linestyle=style["linestyle"],
+                    marker=style["marker"],
+                    markersize=4,
+                    markevery=max(1, len(cum) // 8),
+                    alpha=0.9,
+                )
             bench_cum = (1 + first_bt["index_returns"]).cumprod() - 1
             ax.plot(bench_cum.index, bench_cum.values * 100,
                     linewidth=2, linestyle="--", color="black", label="Nifty 50")

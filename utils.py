@@ -1798,6 +1798,7 @@ def run_recommended_backtest(
     w_map = {}
     tb_map = {}
     achieved_map = {}
+    tolerance_map = {}
     w_prev = None
 
     sr = stock_returns_data.copy()
@@ -1821,17 +1822,16 @@ def run_recommended_backtest(
         # Try original tolerance, then relax if HiGHS returns infeasible
         res = None
         last_err = None
-        # Match the notebook recommended-strategy prototypes: target betas are
-        # tracked softly, with wide bands to avoid infeasible turnover/beta mixes.
-        base_tols = {"MF": 5.0, "SMB": 5.0, "HML": 5.0}
+        if beta_source == "regime_mean":
+            tol_grid = [beta_tol, 0.50, 0.75, 1.00, 1.50, 2.00, 3.00, 5.00]
+        else:
+            # Match the notebook recommended-strategy prototypes: target betas are
+            # tracked softly, with wide bands to avoid infeasible turnover/beta mixes.
+            tol_grid = [5.00]
 
-        for extra_tol in [0.0, 0.05, 0.10, 0.20]:
+        for tol_value in tol_grid:
             try:
-                cur_tols = {
-                    "MF": base_tols["MF"] + (extra_tol if beta_source != "mean_past_best_661" else 0.0),
-                    "SMB": base_tols["SMB"] + extra_tol,
-                    "HML": base_tols["HML"] + (extra_tol if beta_source != "mean_past_best_661" else 0.0),
-                }
+                cur_tols = {"MF": tol_value, "SMB": tol_value, "HML": tol_value}
                 res = build_portfolio_asof_pulp(
                     asof=rb,
                     tickers_in_window=tickers,
@@ -1848,6 +1848,7 @@ def run_recommended_backtest(
                     beta_penalty_gamma=1.0,
                     scenario_missing="drop",
                 )
+                tolerance_map[rb] = cur_tols.copy()
                 break  # success
             except Exception as e:
                 last_err = e
@@ -1859,7 +1860,7 @@ def run_recommended_backtest(
             raise ValueError(
                 f"Portfolio optimization failed at {rb.date()} "
                 f"with target betas {tb} (source='{beta_source}') even after "
-                f"relaxing tolerance to ±{max(base_tols.values()) + 0.20:.2f}. "
+                f"relaxing tolerance to ±{max(tol_grid):.2f}. "
                 f"Universe: {len(tickers)} tickers. "
                 f"Original error: {last_err}"
             ) from last_err
@@ -1930,6 +1931,7 @@ def run_recommended_backtest(
         }
         if beta_source == "regime_mean":
             rebalance_log[str(rb.date())]["regime"] = _get_regime(rb)
+            rebalance_log[str(rb.date())]["beta_tolerances_used"] = tolerance_map.get(rb, {})
         w_prev = new_w
 
     # ── Build return series ───────────────────────────────────────────────────
