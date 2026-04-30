@@ -1616,7 +1616,8 @@ def run_recommended_backtest(
     Backtest pulling target betas from beta_search_log.xlsx at each rebalance date.
     beta_source: 'best' (Strategy 1), 'mean' (Strategy 2), 'median' (Strategy 3),
     'monthly_mean' (Strategy 4 using monthly_beta_stats sheet),
-    or 'mean_past_best_661' (Strategy 5 using 6,6,1 past best-beta recipe).
+    'mean_past_best_661' (Strategy 5 using 6,6,1 past best-beta recipe),
+    or 'regime_mean' (Strategy 6 using regime_mapped + regime_beta_stats sheets).
     excel_path: file path string OR file-like object (e.g. uploaded via Streamlit)
     """
     import os
@@ -1641,18 +1642,63 @@ def run_recommended_backtest(
         monthly_stats["month"] = monthly_stats["month"].astype(str).str.strip()
         monthly_stats = monthly_stats.set_index("month")
 
+    regime_mapped = None
+    regime_beta_means = None
+    if "regime_mapped" in xls.sheet_names and "regime_beta_stats" in xls.sheet_names:
+        regime_mapped = pd.read_excel(xls, sheet_name="regime_mapped").copy()
+        missing = {"entry_date", "REGIME"} - set(regime_mapped.columns)
+        if missing:
+            raise ValueError(f"regime_mapped sheet missing columns: {sorted(missing)}")
+        regime_mapped["entry_date"] = pd.to_datetime(regime_mapped["entry_date"]) + pd.offsets.MonthEnd(0)
+        regime_mapped["REGIME"] = regime_mapped["REGIME"].astype(str).str.strip().str.upper()
+        regime_mapped = regime_mapped.set_index("entry_date").sort_index()
+
+        regime_stats = pd.read_excel(xls, sheet_name="regime_beta_stats").copy()
+        missing = {"Regime", "Factor", "Mean"} - set(regime_stats.columns)
+        if missing:
+            raise ValueError(f"regime_beta_stats sheet missing columns: {sorted(missing)}")
+        regime_stats = regime_stats.dropna(subset=["Regime", "Factor", "Mean"]).copy()
+        regime_stats["Regime"] = regime_stats["Regime"].astype(str).str.strip().str.upper()
+        regime_stats["Factor"] = regime_stats["Factor"].astype(str).str.strip()
+        regime_beta_means = regime_stats.pivot(index="Regime", columns="Factor", values="Mean")
+
     col_map = {
         "best":   ("best_MF",   "best_SMB",   "best_HML"),
         "mean":   ("MF_mean",   "SMB_mean",   "HML_mean"),
         "median": ("MF_median", "SMB_median", "HML_median"),
         "monthly_mean": ("MF_mean", "SMB_mean", "HML_mean"),
         "mean_past_best_661": ("best_MF", "best_SMB", "best_HML"),
+        "regime_mean": ("best_MF", "best_SMB", "best_HML"),
     }
     if beta_source not in col_map:
         raise ValueError(
-            "beta_source must be 'best', 'mean', 'median', 'monthly_mean', or 'mean_past_best_661'"
+            "beta_source must be 'best', 'mean', 'median', 'monthly_mean', "
+            "'mean_past_best_661', or 'regime_mean'"
         )
     mf_col, smb_col, hml_col = col_map[beta_source]
+
+    def _get_regime(asof):
+        if regime_mapped is None:
+            raise ValueError("Strategy 6 requires a 'regime_mapped' sheet in beta_search_log.xlsx.")
+        if asof in regime_mapped.index:
+            regime = regime_mapped.loc[asof, "REGIME"]
+        else:
+            past = regime_mapped.index[regime_mapped.index <= asof]
+            if len(past) == 0:
+                raise ValueError(f"No regime mapping on or before {asof.date()}")
+            regime = regime_mapped.loc[past[-1], "REGIME"]
+        if isinstance(regime, pd.Series):
+            regime = regime.iloc[-1]
+        regime = str(regime).strip().upper()
+
+        if regime != "UNKNOWN":
+            return regime
+
+        prior_known = regime_mapped.loc[regime_mapped.index < asof, "REGIME"]
+        prior_known = prior_known[prior_known != "UNKNOWN"]
+        if prior_known.empty:
+            raise ValueError(f"Regime is UNKNOWN at {asof.date()} and no prior known regime exists")
+        return str(prior_known.iloc[-1]).strip().upper()
 
     def _get_betas(asof):
         if beta_source == "mean_past_best_661":
@@ -1682,6 +1728,21 @@ def run_recommended_backtest(
                 raise ValueError(f"Month '{month_key}' not found in monthly_beta_stats sheet.")
             r = monthly_stats.loc[month_key]
             return {"MF": float(r[mf_col]), "SMB": float(r[smb_col]), "HML": float(r[hml_col])}
+        if beta_source == "regime_mean":
+            if regime_mapped is None or regime_beta_means is None:
+                raise ValueError(
+                    "Strategy 6 requires 'regime_mapped' and 'regime_beta_stats' sheets "
+                    "in beta_search_log.xlsx."
+                )
+            regime = _get_regime(asof)
+            if regime not in regime_beta_means.index:
+                raise ValueError(f"No regime mean betas available for regime '{regime}' at {asof.date()}")
+            r = regime_beta_means.loc[regime]
+            needed = ["best_MF", "best_SMB", "best_HML"]
+            missing = [c for c in needed if c not in r.index or pd.isna(r[c])]
+            if missing:
+                raise ValueError(f"Regime '{regime}' missing mean beta columns: {missing}")
+            return {"MF": float(r["best_MF"]), "SMB": float(r["best_SMB"]), "HML": float(r["best_HML"])}
         if asof in log.index:
             r = log.loc[asof]
             return {"MF": float(r[mf_col]), "SMB": float(r[smb_col]), "HML": float(r[hml_col])}
@@ -1872,6 +1933,8 @@ def run_recommended_backtest(
             "turnover_pct": f"{turnover_frac*100:.1f}%" if turnover_frac is not None else "initial",
             "dollar_turnover": dollar_turnover if dollar_turnover is not None else "initial",
         }
+        if beta_source == "regime_mean":
+            rebalance_log[str(rb.date())]["regime"] = _get_regime(rb)
         w_prev = new_w
 
     # ── Build return series ───────────────────────────────────────────────────

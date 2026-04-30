@@ -216,13 +216,15 @@ with st.sidebar:
             "3. Median lookback period strategy",
             "4. Monthly mean best betas strategy",
             "5. Mean past best betas (6,6,1) strategy",
+            "Strategy 6 mean of regime best betas",
         ]
         strategy_choice = st.selectbox(
             "Strategy",
             strategy_labels,
             help=(
                 "1 = best betas, 2 = mean lookback period, 3 = median lookback period, "
-                "4 = monthly mean best betas, 5 = mean past best betas (6,6,1)"
+                "4 = monthly mean best betas, 5 = mean past best betas (6,6,1), "
+                "6 = mean of regime best betas"
             ),
         )
         beta_source_map = {
@@ -231,6 +233,7 @@ with st.sidebar:
             "3. Median lookback period strategy": "median",
             "4. Monthly mean best betas strategy": "monthly_mean",
             "5. Mean past best betas (6,6,1) strategy": "mean_past_best_661",
+            "Strategy 6 mean of regime best betas": "regime_mean",
         }
         beta_source = beta_source_map[strategy_choice]
 
@@ -625,6 +628,7 @@ with tab2:
                     pv = info.get("portfolio_value", 0)
                     rows.append({
                         "Date": date_str,
+                        "Regime": info.get("regime", "—"),
                         "Portfolio Value": f"${pv:,.0f}",
                         "Turnover": tv,
                         "Dollar Turnover": f"${dt:,.0f}" if isinstance(dt, (int, float)) else str(dt),
@@ -960,6 +964,7 @@ This application implements a portfolio optimization framework based on the
 - 3. Median lookback period strategy
 - 4. Monthly mean best betas strategy
 - 5. Mean past best betas (6,6,1) strategy
+- Strategy 6 mean of regime best betas
 
 ### 📊 Key Features
 
@@ -974,7 +979,7 @@ This application implements a portfolio optimization framework based on the
 - `nifty50_index_data.csv`: Benchmark index returns
 - `FF_Nifty50.csv`: Fama-French factors
 - `sector_classification.csv`: Ticker-to-sector mapping
-- `beta_search_log.xlsx`: Optuna beta search results (needed for Recommended Strategy)
+- `beta_search_log.xlsx`: Optuna beta search results and optional regime sheets (needed for Recommended Strategy)
     """)
 
 st.divider()
