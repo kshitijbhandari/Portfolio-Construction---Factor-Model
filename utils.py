@@ -1821,14 +1821,9 @@ def run_recommended_backtest(
         # Try original tolerance, then relax if HiGHS returns infeasible
         res = None
         last_err = None
-        if beta_source == "monthly_mean":
-            # Match model.ipynb Strategy 4 auto_backtest default.
-            base_tols = {"MF": 5.0, "SMB": 5.0, "HML": 5.0}
-        elif beta_source == "mean_past_best_661":
-            # Match model.ipynb Strategy 5 call: auto_backtest_strategy5(entry, smb_tol=5).
-            base_tols = {"MF": 5.0, "SMB": 5.0, "HML": 5.0}
-        else:
-            base_tols = {"MF": beta_tol, "SMB": beta_tol, "HML": beta_tol}
+        # Match the notebook recommended-strategy prototypes: target betas are
+        # tracked softly, with wide bands to avoid infeasible turnover/beta mixes.
+        base_tols = {"MF": 5.0, "SMB": 5.0, "HML": 5.0}
 
         for extra_tol in [0.0, 0.05, 0.10, 0.20]:
             try:
@@ -1864,7 +1859,7 @@ def run_recommended_backtest(
             raise ValueError(
                 f"Portfolio optimization failed at {rb.date()} "
                 f"with target betas {tb} (source='{beta_source}') even after "
-                f"relaxing tolerance to ±{beta_tol + 0.20:.2f}. "
+                f"relaxing tolerance to ±{max(base_tols.values()) + 0.20:.2f}. "
                 f"Universe: {len(tickers)} tickers. "
                 f"Original error: {last_err}"
             ) from last_err
