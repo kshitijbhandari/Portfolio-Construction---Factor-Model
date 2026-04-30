@@ -237,6 +237,13 @@ with st.sidebar:
         }
         beta_source = beta_source_map[strategy_choice]
 
+        compare_strategy_choices = st.multiselect(
+            "Compare Strategies",
+            options=strategy_labels,
+            default=strategy_labels[:2],
+            help="Choose 2 to 6 recommended strategies for the Strategy Comparison tab.",
+        )
+
         # Fixed defaults for recommended mode
         lookback_months  = 36
         rebalance_every  = 3
@@ -250,6 +257,9 @@ with st.sidebar:
         initial_capital  = 100_000
 
     else:
+        compare_strategy_choices = []
+        beta_source_map = {}
+
         # Customized: full controls
         lookback_months = st.slider(
             "Lookback Period (months)",
@@ -341,10 +351,10 @@ with st.sidebar:
 # ============================================================================
 # TABS
 # ============================================================================
-tab4, tab6, tab1, tab2, tab3, tab5 = st.tabs([
+tab4, tab6, tab1, tab2, tab7, tab3, tab5 = st.tabs([
     "📐 Beta Explorer", "🏭 Sector Dynamics",
     "📊 Run Backtest", "📈 Results",
-    "🔍 Risk Analysis", "ℹ️ Info",
+    "Strategy Comparison", "🔍 Risk Analysis", "ℹ️ Info",
 ])
 
 # ============================================================================
@@ -712,6 +722,150 @@ with tab2:
                         ax.pie(avg_weights, labels=avg_weights.index, autopct='%1.1f%%', startangle=90)
                         ax.set_title("Average Portfolio Allocation")
                         st.pyplot(fig, use_container_width=True)
+
+# ============================================================================
+# TAB: STRATEGY COMPARISON
+# ============================================================================
+with tab7:
+    st.header("Recommended Strategy Comparison")
+
+    if not is_recommended:
+        st.info("Switch to **Recommended Strategy** mode to compare Strategies 1-6.")
+    else:
+        selected_compare = list(compare_strategy_choices)
+        st.caption("Choose 2 to 6 recommended strategies in the sidebar, then run the comparison here.")
+
+        if len(selected_compare) < 2:
+            st.warning("Select at least 2 strategies to compare.")
+        elif len(selected_compare) > 6:
+            st.warning("Select no more than 6 strategies.")
+
+        _local_candidates_cmp = [
+            os.path.join(data_dir, "beta_search_log.xlsx"),
+            "beta_search_log.xlsx",
+            os.path.join(os.path.dirname(__file__), "beta_search_log.xlsx"),
+            os.path.join(os.path.dirname(__file__), "data", "beta_search_log.xlsx"),
+        ]
+        _local_path_cmp = next((p for p in _local_candidates_cmp if os.path.exists(p)), None)
+        if _local_path_cmp:
+            _excel_source_cmp = _local_path_cmp
+        else:
+            _excel_source_cmp = st.file_uploader(
+                "Upload beta_search_log.xlsx for comparison",
+                type=["xlsx"],
+                key="comparison_beta_log_upload",
+            )
+
+        can_compare = 2 <= len(selected_compare) <= 6 and _excel_source_cmp is not None
+
+        if st.button("Run Strategy Comparison", type="primary", use_container_width=True, disabled=not can_compare):
+            from utils import run_recommended_backtest
+
+            comparison_results = {}
+            progress = st.progress(0)
+            status = st.empty()
+
+            for i, label in enumerate(selected_compare, start=1):
+                status.text(f"Running {label} ({i}/{len(selected_compare)})...")
+                src = beta_source_map[label]
+                comparison_results[label] = run_recommended_backtest(
+                    stock_returns_data=stock_returns_data,
+                    fama_french_data=fama_french_data,
+                    index_returns=index_returns_data,
+                    oos_start=oos_start,
+                    oos_months=oos_months,
+                    beta_source=src,
+                    rebalance_every=rebalance_every,
+                    risk_aversion=risk_aversion,
+                    lookback_months=lookback_months,
+                    K_max=K_max,
+                    w_max=w_max,
+                    turnover_cap=turnover_cap,
+                    initial_capital=initial_capital,
+                    excel_path=_excel_source_cmp,
+                    R_full_prebuilt=R_full,
+                    ticker_universe_prebuilt=ticker_universe,
+                )
+                progress.progress(i / len(selected_compare))
+
+            status.empty()
+            st.session_state["comparison_results"] = comparison_results
+            st.session_state["comparison_labels"] = selected_compare
+            st.success(f"Completed comparison for {len(selected_compare)} strategies.")
+
+        if "comparison_results" in st.session_state:
+            comparison_results = st.session_state["comparison_results"]
+
+            st.subheader("Portfolio Value")
+            fig, ax = plt.subplots(figsize=(12, 6))
+            for label, bt in comparison_results.items():
+                ax.plot(bt["strategy_value"].index, bt["strategy_value"].values, linewidth=2, label=label)
+            first_bt = next(iter(comparison_results.values()))
+            ax.plot(first_bt["index_value"].index, first_bt["index_value"].values,
+                    linewidth=2, linestyle="--", color="black", label="Nifty 50")
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Portfolio Value ($)")
+            ax.set_title("Strategy Comparison")
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig, use_container_width=True)
+
+            st.subheader("Cumulative Returns")
+            fig, ax = plt.subplots(figsize=(12, 5))
+            for label, bt in comparison_results.items():
+                cum = (1 + bt["strategy_returns"]).cumprod() - 1
+                ax.plot(cum.index, cum.values * 100, linewidth=2, label=label)
+            bench_cum = (1 + first_bt["index_returns"]).cumprod() - 1
+            ax.plot(bench_cum.index, bench_cum.values * 100,
+                    linewidth=2, linestyle="--", color="black", label="Nifty 50")
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Cumulative Return (%)")
+            ax.set_title("Cumulative Returns")
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig, use_container_width=True)
+
+            def _max_drawdown(value_series):
+                running_max = value_series.cummax()
+                dd = value_series / running_max - 1
+                return float(dd.min())
+
+            rows = []
+            monthly_returns = {}
+            for label, bt in comparison_results.items():
+                strat_rets = bt["strategy_returns"].astype(float)
+                strat_value = bt["strategy_value"].astype(float)
+                bench_value = bt["index_value"].astype(float)
+
+                final_value = float(strat_value.iloc[-1])
+                total_return = final_value / initial_capital - 1
+                bench_return = float(bench_value.iloc[-1]) / initial_capital - 1
+                years = max(len(strat_rets) / 12, 1 / 12)
+                ann_return = (1 + total_return) ** (1 / years) - 1
+                ann_vol = float(strat_rets.std() * np.sqrt(12))
+                sharpe = ann_return / ann_vol if ann_vol > 0 else np.nan
+                max_dd = _max_drawdown(strat_value)
+
+                rows.append({
+                    "Strategy": label,
+                    "Final Value": f"${final_value:,.0f}",
+                    "Total Return": f"{total_return:.2%}",
+                    "Annual Return": f"{ann_return:.2%}",
+                    "Annual Vol": f"{ann_vol:.2%}",
+                    "Sharpe": f"{sharpe:.2f}" if not np.isnan(sharpe) else "N/A",
+                    "Max Drawdown": f"{max_dd:.2%}",
+                    "Vs Nifty": f"{(total_return - bench_return):+.2%}",
+                })
+                monthly_returns[label] = strat_rets
+
+            st.subheader("Basic KPIs")
+            kpi_df = pd.DataFrame(rows).set_index("Strategy")
+            st.dataframe(kpi_df, use_container_width=True)
+
+            st.subheader("Monthly Returns")
+            returns_df = pd.DataFrame(monthly_returns)
+            returns_df.index = returns_df.index.to_period("M").astype(str)
+            st.dataframe((returns_df * 100).round(2), use_container_width=True)
 
 # ============================================================================
 # TAB: RISK ANALYSIS
