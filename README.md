@@ -1,3 +1,14 @@
+---
+title: Factor-based Portfolio Constructor
+emoji: 📈
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+sdk_version: "1.41.1"
+app_file: app.py
+pinned: false
+---
+
 # Factor Model Portfolio Optimizer
 
 A Streamlit web app for Fama-French 3-factor portfolio optimization and backtesting on the Nifty 50 universe.
