@@ -33,7 +33,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-**Live app**: [https://huggingface.co/spaces/kshitijbhandari/Factor-based-Portfolio-Constructor](https://portfolio-construction---factor-model-95qos8gfhft3fkcqnqfius.streamlit.app/)
+**Live app**: https://portfolio-construction---factor-model-95qos8gfhft3fkcqnqfius.streamlit.app/
 
 ---
 
