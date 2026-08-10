@@ -1614,7 +1614,7 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
 # ----------------------------------------------------------------------
 # Dynamic threshold search (beta_tol / turnover_cap / beta_penalty_gamma)
 # ----------------------------------------------------------------------
-DEFAULT_BETA_TOL_LADDER = [0.30, 0.50, 1.0, 2.0, 3.0, 4.0, 5.0]
+DEFAULT_BETA_TOL_LADDER = [1, 2, 3, 4, 5, 6, 7, 8]
 DEFAULT_TURNOVER_CAP_LADDER = [0.25, 0.30, 0.40, 0.50, 0.60, 0.70]
 DEFAULT_BETA_PENALTY_GAMMA_LADDER = [1.0, 5.0, 15.0, 40.0, 100.0]
 DEFAULT_MAX_BETA_TRACKING_ERROR = 0.15  # max |achieved - target| per factor considered "good enough"
