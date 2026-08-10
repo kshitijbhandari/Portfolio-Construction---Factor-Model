@@ -135,7 +135,7 @@ with st.sidebar:
     # ── Strategy mode ─────────────────────────────────────────────────────────
     strategy_mode = st.radio(
         "Strategy Mode",
-        ["Customized Strategy", "Recommended Strategy"],
+        ["Recommended Strategy", "Customized Strategy"],
         horizontal=True,
     )
     is_recommended = strategy_mode == "Recommended Strategy"
@@ -224,29 +224,26 @@ with st.sidebar:
     if is_recommended:
         # Strategy dropdown
         strategy_labels = [
-            "1. Best betas strategy",
-            "2. Mean Lookbck period strategy",
-            "3. Median lookback period strategy",
-            "4. Monthly mean best betas strategy",
-            "5. Mean past best betas (6,6,1) strategy",
-            "Strategy 6 mean of regime best betas",
+            "Trailing Mean Beta",
+            "Trailing Median Beta",
+            "Seasonal Beta Rotation",
+            "Regime-Adaptive Rotation",
         ]
         strategy_choice = st.selectbox(
             "Strategy",
             strategy_labels,
             help=(
-                "1 = best betas, 2 = mean lookback period, 3 = median lookback period, "
-                "4 = monthly mean best betas, 5 = mean past best betas (6,6,1), "
-                "6 = mean of regime best betas"
+                "Trailing Mean/Median Beta = rolling average/median of historically "
+                "optimal betas. Seasonal Beta Rotation = betas conditioned on calendar "
+                "month. Regime-Adaptive Rotation = betas conditioned on the current "
+                "macro regime (Investment Clock)."
             ),
         )
         beta_source_map = {
-            "1. Best betas strategy": "best",
-            "2. Mean Lookbck period strategy": "mean",
-            "3. Median lookback period strategy": "median",
-            "4. Monthly mean best betas strategy": "monthly_mean",
-            "5. Mean past best betas (6,6,1) strategy": "mean_past_best_661",
-            "Strategy 6 mean of regime best betas": "regime_mean",
+            "Trailing Mean Beta":       "mean",
+            "Trailing Median Beta":     "median",
+            "Seasonal Beta Rotation":   "monthly_mean",
+            "Regime-Adaptive Rotation": "regime_mean",
         }
         beta_source = beta_source_map[strategy_choice]
 
@@ -254,7 +251,7 @@ with st.sidebar:
             "Compare Strategies",
             options=strategy_labels,
             default=strategy_labels[:2],
-            help="Choose 2 to 6 recommended strategies for the Strategy Comparison tab.",
+            help="Choose 2 to 4 recommended strategies for the Strategy Comparison tab.",
         )
 
         # Fixed defaults for recommended mode
@@ -269,19 +266,9 @@ with st.sidebar:
         sector_constraints = None
         initial_capital  = 100_000
 
-        st.divider()
-        st.subheader("🔀 Dynamic Thresholding")
-        use_dynamic_thresholds = st.checkbox(
-            "Auto-relax beta tolerance / turnover cap / beta penalty on infeasibility",
-            value=False,
-            help=(
-                "Instead of a single fixed beta_tol, searches increasingly loose "
-                "(turnover_cap, beta_tol) combos at rising beta_penalty_gamma until "
-                "one both solves and tracks the target beta closely. Falls back to "
-                "the best tracking result found if none hits the target exactly."
-            ),
-        )
-        threshold_mode = "dynamic" if use_dynamic_thresholds else "fixed"
+        # Dynamic thresholding (auto-relax beta tolerance / turnover cap / beta
+        # penalty on infeasibility) is always on for recommended strategies.
+        threshold_mode = "dynamic"
 
     else:
         compare_strategy_choices = []
@@ -378,63 +365,73 @@ with st.sidebar:
 # ============================================================================
 # TABS
 # ============================================================================
-tab4, tab6, tab1, tab2, tab7, tab3, tab5 = st.tabs([
-    "📐 Beta Explorer", "🏭 Sector Dynamics",
-    "📊 Run Backtest", "📈 Results",
-    "Strategy Comparison", "🔍 Risk Analysis", "ℹ️ Info",
-])
+if is_recommended:
+    tab1, tab2, tab_detail, tab7, tab3, tab5 = st.tabs([
+        "📊 Run Backtest", "📈 Results", "🔄 Portfolio Detail",
+        "Strategy Comparison",
+        "🔍 Risk Analysis", "ℹ️ Info",
+    ])
+    tab4 = tab6 = None
+else:
+    tab4, tab6, tab1, tab2, tab_detail, tab7, tab3, tab5 = st.tabs([
+        "📐 Beta Explorer", "🏭 Sector Dynamics",
+        "📊 Run Backtest", "📈 Results", "🔄 Portfolio Detail",
+        "Strategy Comparison",
+        "🔍 Risk Analysis", "ℹ️ Info",
+    ])
 
 # ============================================================================
 # TAB: SECTOR DYNAMICS
 # ============================================================================
-with tab6:
-    st.header("Sector Dynamics")
+if tab6 is not None:
+    with tab6:
+        st.header("Sector Dynamics")
 
-    _sd_key = f"{oos_start}|{lookback_months}"
-    if st.session_state.get("sd_key") != _sd_key:
-        st.session_state.pop("sd_results", None)
-
-    if "sd_results" not in st.session_state:
-        st.info(f"As-of: **{oos_start}**, lookback: **{lookback_months}m**")
-        if st.button("▶️ Compute Sector Dynamics", type="primary", use_container_width=True):
-            with st.spinner("Computing sector metrics..."):
-                try:
-                    sector_monthly, metrics, fig_bytes = compute_sector_dynamics(
-                        oos_start, lookback_months,
-                        stock_returns_data, fama_french_data, ticker_to_sector,
-                    )
-                    st.session_state["sd_results"] = (sector_monthly, metrics, fig_bytes)
-                    st.session_state["sd_key"] = _sd_key
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                    st.exception(e)
-    else:
-        sector_monthly, metrics, fig_bytes = st.session_state["sd_results"]
-        st.caption(f"Equal-weighted sector performance — **{lookback_months}-month** lookback ending **{oos_start}**.")
-        if st.button("🔄 Recompute"):
+        _sd_key = f"{oos_start}|{lookback_months}"
+        if st.session_state.get("sd_key") != _sd_key:
             st.session_state.pop("sd_results", None)
-            st.rerun()
 
-        st.subheader("📊 Sector Metrics Table")
-        metrics_df = pd.DataFrame(metrics)
+        if "sd_results" not in st.session_state:
+            st.info(f"As-of: **{oos_start}**, lookback: **{lookback_months}m**")
+            if st.button("▶️ Compute Sector Dynamics", type="primary", use_container_width=True):
+                with st.spinner("Computing sector metrics..."):
+                    try:
+                        sector_monthly, metrics, fig_bytes = compute_sector_dynamics(
+                            oos_start, lookback_months,
+                            stock_returns_data, fama_french_data, ticker_to_sector,
+                        )
+                        st.session_state["sd_results"] = (sector_monthly, metrics, fig_bytes)
+                        st.session_state["sd_key"] = _sd_key
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                        st.exception(e)
+        else:
+            sector_monthly, metrics, fig_bytes = st.session_state["sd_results"]
+            st.caption(f"Equal-weighted sector performance — **{lookback_months}-month** lookback ending **{oos_start}**.")
+            if st.button("🔄 Recompute"):
+                st.session_state.pop("sd_results", None)
+                st.rerun()
 
-        def _style_cell(val):
-            if val == "Accelerating":
-                return "background-color: #d4edda; color: #155724; font-weight: bold"
-            if val == "Decelerating":
-                return "background-color: #f8d7da; color: #721c24; font-weight: bold"
-            return ""
+            st.subheader("📊 Sector Metrics Table")
+            metrics_df = pd.DataFrame(metrics)
 
-        try:
-            styled = metrics_df.style.map(_style_cell)
-        except AttributeError:
-            styled = metrics_df.style.applymap(_style_cell)
+            def _style_cell(val):
+                if val == "Accelerating":
+                    return "background-color: #d4edda; color: #155724; font-weight: bold"
+                if val == "Decelerating":
+                    return "background-color: #f8d7da; color: #721c24; font-weight: bold"
+                return ""
 
-        st.dataframe(styled, use_container_width=True)
-        st.divider()
-        st.subheader("📈 Cumulative Return Trends")
-        st.image(fig_bytes, use_container_width=True)
+            try:
+                styled = metrics_df.style.map(_style_cell)
+            except AttributeError:
+                styled = metrics_df.style.applymap(_style_cell)
+
+            st.dataframe(styled, use_container_width=True)
+            st.divider()
+            st.subheader("📈 Cumulative Return Trends")
+            st.image(fig_bytes, use_container_width=True)
 
 # ============================================================================
 # TAB: RUN BACKTEST
@@ -585,33 +582,10 @@ with tab2:
         st.info("👈 Run a backtest first in the 'Run Backtest' tab")
     else:
         bt = st.session_state.backtest_result
-        _mode  = st.session_state.get("backtest_mode", "customized")
         _label = st.session_state.get("strategy_label", "Portfolio")
 
         strategy_value = bt["strategy_value"]
         index_value    = bt["index_value"]
-        _init_cap      = float(strategy_value.iloc[0] / (1 + bt["strategy_returns"].iloc[0]))
-
-        # ── Key metrics ───────────────────────────────────────────────────────
-        col1, col2, col3, col4 = st.columns(4)
-
-        final_strategy  = strategy_value.iloc[-1]
-        final_index     = index_value.iloc[-1]
-        strategy_return = (final_strategy - _init_cap) / _init_cap * 100
-        index_return    = (final_index    - _init_cap) / _init_cap * 100
-
-        with col1:
-            st.metric(f"{_label} Final Value", f"${final_strategy:,.0f}", f"{strategy_return:+.2f}%")
-        with col2:
-            st.metric("Nifty 50 Final Value",  f"${final_index:,.0f}",   f"{index_return:+.2f}%")
-        with col3:
-            outperformance = (final_strategy - final_index) / final_index * 100
-            st.metric("Outperformance vs Nifty 50", f"{outperformance:+.2f}%", f"${final_strategy - final_index:+,.0f}")
-        with col4:
-            ann_vol = bt["strategy_returns"].std() * np.sqrt(12)
-            st.metric("Annual Volatility", f"{ann_vol:.2%}")
-
-        st.divider()
 
         # ── Portfolio value chart ─────────────────────────────────────────────
         st.subheader("📈 Portfolio Value Over Time")
@@ -630,6 +604,66 @@ with tab2:
         ax.legend()
         ax.grid(True, alpha=0.3)
         st.pyplot(fig, use_container_width=True)
+
+        st.divider()
+
+        # ── Performance metrics table ──────────────────────────────────────────
+        st.subheader("📋 Performance Metrics")
+
+        from utils import compute_performance_metrics
+        perf = compute_performance_metrics(
+            strategy_returns=bt["strategy_returns"],
+            index_returns=bt["index_returns"],
+            fama_french_data=fama_french_data,
+        )
+        nifty_perf = compute_performance_metrics(
+            strategy_returns=bt["index_returns"],
+            index_returns=bt["index_returns"],
+            fama_french_data=fama_french_data,
+        )
+
+        def _perf_row(name, p, alpha_override=None):
+            return {
+                "Strategy": name,
+                "Total Return": p["total_return"],
+                "Ann. Return": p["annualized_return"],
+                "Ann. Volatility": p["annualized_vol"],
+                "Sharpe": p["sharpe"],
+                "Sortino": p["sortino"],
+                "Alpha (ann.)": p["alpha_annualized"] if alpha_override is None else alpha_override,
+                "Win Rate": p["win_rate"],
+                "Avg Drawdown": p["avg_drawdown"],
+            }
+
+        metrics_df = pd.DataFrame([
+            _perf_row(_label, perf),
+            _perf_row("Nifty 50 (Benchmark)", nifty_perf, alpha_override=0.0),
+        ]).set_index("Strategy")
+
+        _perf_fmt = {
+            "Total Return": "{:+.2%}", "Ann. Return": "{:+.2%}", "Ann. Volatility": "{:.2%}",
+            "Sharpe": "{:.2f}", "Sortino": "{:.2f}", "Alpha (ann.)": "{:+.2%}",
+            "Win Rate": "{:.1%}", "Avg Drawdown": "{:.2%}",
+        }
+        st.dataframe(
+            metrics_df.style.format(_perf_fmt).background_gradient(
+                subset=["Sharpe", "Sortino", "Alpha (ann.)"], cmap="RdYlGn"
+            ),
+            use_container_width=True,
+        )
+
+# ============================================================================
+# TAB: PORTFOLIO DETAIL
+# ============================================================================
+with tab_detail:
+    st.header("Portfolio Detail")
+
+    if "backtest_result" not in st.session_state:
+        st.info("👈 Run a backtest first in the 'Run Backtest' tab")
+    else:
+        bt = st.session_state.backtest_result
+        _mode  = st.session_state.get("backtest_mode", "customized")
+        _label = st.session_state.get("strategy_label", "Portfolio")
 
         # ── Monthly returns ────────────────────────────────────────────────────
         st.subheader("📊 Monthly Returns")
@@ -758,15 +792,15 @@ with tab7:
     st.header("Recommended Strategy Comparison")
 
     if not is_recommended:
-        st.info("Switch to **Recommended Strategy** mode to compare Strategies 1-6.")
+        st.info("Switch to **Recommended Strategy** mode to compare strategies.")
     else:
         selected_compare = list(compare_strategy_choices)
-        st.caption("Choose 2 to 6 recommended strategies in the sidebar, then run the comparison here.")
+        st.caption("Choose 2 to 4 recommended strategies in the sidebar, then run the comparison here.")
 
         if len(selected_compare) < 2:
             st.warning("Select at least 2 strategies to compare.")
-        elif len(selected_compare) > 6:
-            st.warning("Select no more than 6 strategies.")
+        elif len(selected_compare) > 4:
+            st.warning("Select no more than 4 strategies.")
 
         _local_candidates_cmp = [
             os.path.join(data_dir, "beta_search_log.xlsx"),
@@ -784,7 +818,7 @@ with tab7:
                 key="comparison_beta_log_upload",
             )
 
-        can_compare = 2 <= len(selected_compare) <= 6 and _excel_source_cmp is not None
+        can_compare = 2 <= len(selected_compare) <= 4 and _excel_source_cmp is not None
 
         if st.button("Run Strategy Comparison", type="primary", use_container_width=True, disabled=not can_compare):
             from utils import run_recommended_backtest
@@ -1037,138 +1071,139 @@ with tab3:
 # ============================================================================
 # TAB: BETA EXPLORER
 # ============================================================================
-with tab4:
-    st.header("Beta Explorer")
-    st.markdown("Understand the factor landscape before committing to target betas.")
+if tab4 is not None:
+    with tab4:
+        st.header("Beta Explorer")
+        st.markdown("Understand the factor landscape before committing to target betas.")
 
-    # ── Factor monthly returns ────────────────────────────────────────────────
-    st.subheader("📈 Factor Monthly Returns over Lookback Window")
-    try:
-        ff_plot = fama_french_data.copy()
-        ff_plot["Date"] = pd.to_datetime(ff_plot["Date"])
-        ff_plot = ff_plot.sort_values("Date").set_index("Date")
-        factor_cols_avail = [c for c in ["MF", "SMB", "HML"] if c in ff_plot.columns]
+        # ── Factor monthly returns ────────────────────────────────────────────────
+        st.subheader("📈 Factor Monthly Returns over Lookback Window")
+        try:
+            ff_plot = fama_french_data.copy()
+            ff_plot["Date"] = pd.to_datetime(ff_plot["Date"])
+            ff_plot = ff_plot.sort_values("Date").set_index("Date")
+            factor_cols_avail = [c for c in ["MF", "SMB", "HML"] if c in ff_plot.columns]
 
-        oos_dt = pd.Period(oos_start, "M").to_timestamp(how="end")
-        lb_dt  = oos_dt - pd.DateOffset(months=lookback_months)
-        ff_window = ff_plot.loc[lb_dt:oos_dt, factor_cols_avail].copy()
-        ff_window.index = ff_window.index.to_period("M")
+            oos_dt = pd.Period(oos_start, "M").to_timestamp(how="end")
+            lb_dt  = oos_dt - pd.DateOffset(months=lookback_months)
+            ff_window = ff_plot.loc[lb_dt:oos_dt, factor_cols_avail].copy()
+            ff_window.index = ff_window.index.to_period("M")
 
-        colors_map  = {"MF": "#1f77b4", "SMB": "#2ca02c", "HML": "#d62728"}
-        factor_full = {"MF": "Market (MF)", "SMB": "Size (SMB)", "HML": "Value (HML)"}
+            colors_map  = {"MF": "#1f77b4", "SMB": "#2ca02c", "HML": "#d62728"}
+            factor_full = {"MF": "Market (MF)", "SMB": "Size (SMB)", "HML": "Value (HML)"}
 
-        fig_trend, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
-        for ax, col in zip(axes, factor_cols_avail):
-            series = ff_window[col] * 100
-            bar_colors = [colors_map[col] if v >= 0 else "#cc0000" for v in series.values]
-            ax.bar(range(len(series)), series.values, color=bar_colors, alpha=0.7, width=0.8)
-            roll3 = series.rolling(3).mean()
-            ax.plot(range(len(series)), roll3.values, color="black", linewidth=1.2, linestyle="--", label="3m avg")
-            ax.axhline(0, color="black", linewidth=0.6)
-            ax.set_ylabel(f"{col} (%)", fontsize=10)
-            ax.set_title(factor_full.get(col, col), fontsize=10, fontweight="bold", pad=3)
-            ax.grid(True, alpha=0.25, axis="y")
-            ax.legend(fontsize=8, loc="upper right")
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+            fig_trend, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+            for ax, col in zip(axes, factor_cols_avail):
+                series = ff_window[col] * 100
+                bar_colors = [colors_map[col] if v >= 0 else "#cc0000" for v in series.values]
+                ax.bar(range(len(series)), series.values, color=bar_colors, alpha=0.7, width=0.8)
+                roll3 = series.rolling(3).mean()
+                ax.plot(range(len(series)), roll3.values, color="black", linewidth=1.2, linestyle="--", label="3m avg")
+                ax.axhline(0, color="black", linewidth=0.6)
+                ax.set_ylabel(f"{col} (%)", fontsize=10)
+                ax.set_title(factor_full.get(col, col), fontsize=10, fontweight="bold", pad=3)
+                ax.grid(True, alpha=0.25, axis="y")
+                ax.legend(fontsize=8, loc="upper right")
+                ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
 
-        n = len(ff_window)
-        step = max(1, n // 12)
-        tick_pos    = list(range(0, n, step))
-        tick_labels = [str(ff_window.index[i]) for i in tick_pos]
-        axes[-1].set_xticks(tick_pos)
-        axes[-1].set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=8)
-        axes[-1].set_xlabel("Month")
-        fig_trend.suptitle(f"Factor Monthly Returns  ({lb_dt.strftime('%Y-%m')} → {oos_dt.strftime('%Y-%m')})",
-                           fontsize=12, fontweight="bold")
-        fig_trend.tight_layout()
-        st.pyplot(fig_trend, use_container_width=True)
+            n = len(ff_window)
+            step = max(1, n // 12)
+            tick_pos    = list(range(0, n, step))
+            tick_labels = [str(ff_window.index[i]) for i in tick_pos]
+            axes[-1].set_xticks(tick_pos)
+            axes[-1].set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=8)
+            axes[-1].set_xlabel("Month")
+            fig_trend.suptitle(f"Factor Monthly Returns  ({lb_dt.strftime('%Y-%m')} → {oos_dt.strftime('%Y-%m')})",
+                               fontsize=12, fontweight="bold")
+            fig_trend.tight_layout()
+            st.pyplot(fig_trend, use_container_width=True)
 
-        stats_df = pd.DataFrame({
-            "Ann. Mean (%)":  (ff_window.mean() * 12).round(2),
-            "Ann. Vol (%)":   (ff_window.std() * np.sqrt(12)).round(2),
-            "Sharpe":         ((ff_window.mean() / ff_window.std()) * np.sqrt(12)).round(3),
-            "Min month (%)":  ff_window.min().round(2),
-            "Max month (%)":  ff_window.max().round(2),
-        })
-        st.dataframe(stats_df, use_container_width=True)
+            stats_df = pd.DataFrame({
+                "Ann. Mean (%)":  (ff_window.mean() * 12).round(2),
+                "Ann. Vol (%)":   (ff_window.std() * np.sqrt(12)).round(2),
+                "Sharpe":         ((ff_window.mean() / ff_window.std()) * np.sqrt(12)).round(3),
+                "Min month (%)":  ff_window.min().round(2),
+                "Max month (%)":  ff_window.max().round(2),
+            })
+            st.dataframe(stats_df, use_container_width=True)
 
-    except Exception as e:
-        st.warning(f"Could not render factor trend: {e}")
+        except Exception as e:
+            st.warning(f"Could not render factor trend: {e}")
 
-    st.divider()
+        st.divider()
 
-    # ── Achievable beta ranges ────────────────────────────────────────────────
-    st.subheader("🎯 Achievable Beta Ranges")
-    st.caption(f"Min/max portfolio beta reachable given **K_max={K_max}** and **w_max={w_max*100:.0f}%** at **{oos_start}**.")
+        # ── Achievable beta ranges ────────────────────────────────────────────────
+        st.subheader("🎯 Achievable Beta Ranges")
+        st.caption(f"Min/max portfolio beta reachable given **K_max={K_max}** and **w_max={w_max*100:.0f}%** at **{oos_start}**.")
 
-    if is_recommended:
-        st.info("Achievable beta ranges are shown for reference. In Recommended mode the optimizer targets betas from your Excel log automatically.")
+        if is_recommended:
+            st.info("Achievable beta ranges are shown for reference. In Recommended mode the optimizer targets betas from your Excel log automatically.")
 
-    if st.button("Compute Beta Ranges", type="primary"):
-        with st.spinner("Estimating betas and computing ranges (MILP)..."):
-            try:
-                from utils import (estimate_betas_asof_nifty,
-                                   compute_achievable_beta_bounds,
-                                   _filter_tickers_by_history)
+        if st.button("Compute Beta Ranges", type="primary"):
+            with st.spinner("Estimating betas and computing ranges (MILP)..."):
+                try:
+                    from utils import (estimate_betas_asof_nifty,
+                                       compute_achievable_beta_bounds,
+                                       _filter_tickers_by_history)
 
-                asof_ts    = pd.Timestamp(oos_start) + pd.offsets.MonthEnd(0)
-                tickers_sel = ticker_universe.get(
-                    asof_ts,
-                    _filter_tickers_by_history(
-                        R_full.columns.tolist(), R_full, asof_ts,
-                        lookback_months=lookback_months, min_obs=lookback_months,
+                    asof_ts    = pd.Timestamp(oos_start) + pd.offsets.MonthEnd(0)
+                    tickers_sel = ticker_universe.get(
+                        asof_ts,
+                        _filter_tickers_by_history(
+                            R_full.columns.tolist(), R_full, asof_ts,
+                            lookback_months=lookback_months, min_obs=lookback_months,
+                        )
                     )
-                )
-                betas_sel = estimate_betas_asof_nifty(
-                    returns_df=stock_returns_data, factors_df=fama_french_data,
-                    asof=oos_start, tickers_in_window=tickers_sel,
-                    lookback_months=lookback_months, min_obs=lookback_months,
-                    use_t_as_last_obs=False,
-                )
-                asof_dt = asof_ts
-                lb_dt2  = asof_dt - pd.DateOffset(months=lookback_months)
-                R_sel   = R_full.loc[
-                    (R_full.index > lb_dt2) & (R_full.index <= asof_dt),
-                    [t for t in tickers_sel if t in R_full.columns]
-                ].dropna(axis=1, thresh=lookback_months)
+                    betas_sel = estimate_betas_asof_nifty(
+                        returns_df=stock_returns_data, factors_df=fama_french_data,
+                        asof=oos_start, tickers_in_window=tickers_sel,
+                        lookback_months=lookback_months, min_obs=lookback_months,
+                        use_t_as_last_obs=False,
+                    )
+                    asof_dt = asof_ts
+                    lb_dt2  = asof_dt - pd.DateOffset(months=lookback_months)
+                    R_sel   = R_full.loc[
+                        (R_full.index > lb_dt2) & (R_full.index <= asof_dt),
+                        [t for t in tickers_sel if t in R_full.columns]
+                    ].dropna(axis=1, thresh=lookback_months)
 
-                bounds = compute_achievable_beta_bounds(R=R_sel, betas_asof=betas_sel, K_max=K_max, w_max=w_max)
+                    bounds = compute_achievable_beta_bounds(R=R_sel, betas_asof=betas_sel, K_max=K_max, w_max=w_max)
 
-                if "error" in bounds:
-                    st.error(f"Cannot compute ranges: {bounds['error']}")
-                else:
-                    _tgt = target_betas if target_betas else {"MF": 1.0, "SMB": 0.0, "HML": 0.2}
-                    ranges_df = pd.DataFrame({
-                        f: {
-                            "Min achievable": round(v["min"], 3),
-                            "Max achievable": round(v["max"], 3),
-                            "Your target":    round(_tgt.get(f, 0), 3),
-                            "In range?":      "✅" if (v["min"] - 0.01 <= _tgt.get(f, 0) <= v["max"] + 0.01) else "❌",
-                        }
-                        for f, v in bounds.items()
-                    }).T
-                    st.dataframe(ranges_df, use_container_width=True)
+                    if "error" in bounds:
+                        st.error(f"Cannot compute ranges: {bounds['error']}")
+                    else:
+                        _tgt = target_betas if target_betas else {"MF": 1.0, "SMB": 0.0, "HML": 0.2}
+                        ranges_df = pd.DataFrame({
+                            f: {
+                                "Min achievable": round(v["min"], 3),
+                                "Max achievable": round(v["max"], 3),
+                                "Your target":    round(_tgt.get(f, 0), 3),
+                                "In range?":      "✅" if (v["min"] - 0.01 <= _tgt.get(f, 0) <= v["max"] + 0.01) else "❌",
+                            }
+                            for f, v in bounds.items()
+                        }).T
+                        st.dataframe(ranges_df, use_container_width=True)
 
-                    fig_b, ax_b = plt.subplots(figsize=(8, 4))
-                    factors_b = list(bounds.keys())
-                    mins_b = [bounds[f]["min"] for f in factors_b]
-                    maxs_b = [bounds[f]["max"] for f in factors_b]
-                    tgts_b = [_tgt.get(f, 0) for f in factors_b]
-                    x_b    = np.arange(len(factors_b))
-                    ax_b.bar(x_b, [mx - mn for mn, mx in zip(mins_b, maxs_b)], bottom=mins_b,
-                             color=["#1f77b4","#2ca02c","#d62728"], alpha=0.4, width=0.5)
-                    ax_b.scatter(x_b, tgts_b, color="black", zorder=5, s=100, marker="D", label="Target")
-                    ax_b.set_xticks(x_b)
-                    ax_b.set_xticklabels(factors_b, fontsize=12)
-                    ax_b.set_ylabel("Beta")
-                    ax_b.set_title("Achievable Beta Ranges")
-                    ax_b.legend()
-                    ax_b.grid(True, alpha=0.3, axis="y")
-                    st.pyplot(fig_b, use_container_width=True)
+                        fig_b, ax_b = plt.subplots(figsize=(8, 4))
+                        factors_b = list(bounds.keys())
+                        mins_b = [bounds[f]["min"] for f in factors_b]
+                        maxs_b = [bounds[f]["max"] for f in factors_b]
+                        tgts_b = [_tgt.get(f, 0) for f in factors_b]
+                        x_b    = np.arange(len(factors_b))
+                        ax_b.bar(x_b, [mx - mn for mn, mx in zip(mins_b, maxs_b)], bottom=mins_b,
+                                 color=["#1f77b4","#2ca02c","#d62728"], alpha=0.4, width=0.5)
+                        ax_b.scatter(x_b, tgts_b, color="black", zorder=5, s=100, marker="D", label="Target")
+                        ax_b.set_xticks(x_b)
+                        ax_b.set_xticklabels(factors_b, fontsize=12)
+                        ax_b.set_ylabel("Beta")
+                        ax_b.set_title("Achievable Beta Ranges")
+                        ax_b.legend()
+                        ax_b.grid(True, alpha=0.3, axis="y")
+                        st.pyplot(fig_b, use_container_width=True)
 
-            except Exception as e:
-                st.error(f"Error: {e}")
-                st.exception(e)
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.exception(e)
 
 # ============================================================================
 # TAB: INFO
@@ -1190,12 +1225,10 @@ This application implements a portfolio optimization framework based on the
 **Customized Strategy**: Full control over target betas, tolerances, sector constraints, etc.
 
 **Recommended Strategy**: Betas are automatically sourced from `beta_search_log.xlsx` (generated by Optuna search in model.ipynb).
-- 1. Best betas strategy
-- 2. Mean Lookbck period strategy
-- 3. Median lookback period strategy
-- 4. Monthly mean best betas strategy
-- 5. Mean past best betas (6,6,1) strategy
-- Strategy 6 mean of regime best betas
+- **Trailing Mean Beta**: rolling average of historically optimal betas
+- **Trailing Median Beta**: rolling median of historically optimal betas (robust to outliers)
+- **Seasonal Beta Rotation**: betas conditioned on calendar month
+- **Regime-Adaptive Rotation**: betas conditioned on the current macro regime (Investment Clock)
 
 ### 📊 Key Features
 

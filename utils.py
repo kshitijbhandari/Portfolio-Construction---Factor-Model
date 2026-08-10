@@ -10,7 +10,24 @@ import time
 import tempfile
 import shutil
 from tqdm.auto import tqdm
+import contextlib
 warnings.filterwarnings('ignore')
+
+# Set True while an automated search (e.g. the dynamic threshold ladder) is
+# probing many candidate solves -- skips the expensive per-failure debug
+# report (which itself runs ~12 extra small solves) so a 100+ combo search
+# doesn't turn into 1000+ solves. Use _suppress_infeasible_debug() below.
+_SUPPRESS_INFEASIBLE_DEBUG = [False]
+
+
+@contextlib.contextmanager
+def _suppress_infeasible_debug():
+    _SUPPRESS_INFEASIBLE_DEBUG[0] = True
+    try:
+        yield
+    finally:
+        _SUPPRESS_INFEASIBLE_DEBUG[0] = False
+
 
 def _make_solver():
     """Use HiGHS if available, fall back to CBC."""
@@ -1003,24 +1020,25 @@ def optimize_pulp_mad_targetbetas_cardinality(
     if pulp.LpStatus[status] != "Optimal":
         status_str = pulp.LpStatus[status]
 
-        debug_optimization_failure(
-            asof=None,  # set this if you have an asof in the caller/backtest
-            status=status_str,
-            R=R,
-            betas_asof=betas_asof,
-            tickers_requested=tickers,
-            target_betas=target_betas,
-            beta_tolerances=beta_tolerances,
-            K_max=K_max,
-            w_max=w_max,
-            w_min_if_selected=w_min_if_selected,
-            turnover_cap=turnover_cap,
-            w_prev=w_prev,
-            solver_name=type(solver).__name__,
-            objective_mode=objective_mode,
-            compute_1d_bounds_fn=compute_achievable_beta_bounds,          # <- your function
-            compute_conditional_bounds_fn=compute_conditional_beta_bounds # <- your function
-        )
+        if not _SUPPRESS_INFEASIBLE_DEBUG[0]:
+            debug_optimization_failure(
+                asof=None,  # set this if you have an asof in the caller/backtest
+                status=status_str,
+                R=R,
+                betas_asof=betas_asof,
+                tickers_requested=tickers,
+                target_betas=target_betas,
+                beta_tolerances=beta_tolerances,
+                K_max=K_max,
+                w_max=w_max,
+                w_min_if_selected=w_min_if_selected,
+                turnover_cap=turnover_cap,
+                w_prev=w_prev,
+                solver_name=type(solver).__name__,
+                objective_mode=objective_mode,
+                compute_1d_bounds_fn=compute_achievable_beta_bounds,          # <- your function
+                compute_conditional_bounds_fn=compute_conditional_beta_bounds # <- your function
+            )
 
         raise RuntimeError(f"PuLP Optimization failed: {status_str}")
 
@@ -1602,37 +1620,6 @@ DEFAULT_BETA_PENALTY_GAMMA_LADDER = [1.0, 5.0, 15.0, 40.0, 100.0]
 DEFAULT_MAX_BETA_TRACKING_ERROR = 0.15  # max |achieved - target| per factor considered "good enough"
 
 
-def _solve_with_ladder(build_fn, beta_tol_ladder, turnover_cap_ladder):
-    """
-    Try (turnover_cap, beta_tol) combos from tightest to loosest.
-    turnover_cap is the outer loop because it's the parameter that can
-    actually make the MILP infeasible (universe changes forcing a big
-    rebalance). beta_tol only rescales the soft beta-tracking penalty
-    and never affects feasibility on its own -- but we still widen it
-    in step so a run that needed a looser turnover cap doesn't also
-    silently drop beta tracking to its tightest (most expensive) setting.
-
-    build_fn(beta_tol, turnover_cap) -> res. Returns (res, beta_tol_used,
-    turnover_cap_used). Raises RuntimeError if nothing in either ladder solves.
-    """
-    last_err = None
-    for turnover_cap in turnover_cap_ladder:
-        for beta_tol in beta_tol_ladder:
-            try:
-                res = build_fn(beta_tol, turnover_cap)
-                return res, beta_tol, turnover_cap
-            except Exception as e:
-                if "infeasible" not in str(e).lower() and "infeasible" not in repr(e).lower():
-                    raise
-                last_err = e
-                continue
-    raise RuntimeError(
-        f"No feasible (beta_tol, turnover_cap) found. "
-        f"beta_tol_ladder={beta_tol_ladder}, turnover_cap_ladder={turnover_cap_ladder}. "
-        f"Last error: {last_err}"
-    )
-
-
 def _achieved_betas_from_res(res):
     """Compute achieved portfolio beta exposure from a build_portfolio_asof_pulp result."""
     w = res["weights"]
@@ -1659,41 +1646,149 @@ def _solve_with_gamma_ladder(
     max_tracking_error=DEFAULT_MAX_BETA_TRACKING_ERROR,
 ):
     """
-    For each beta_penalty_gamma in gamma_ladder (ascending -- weakest
-    tracking pull first), run the turnover/beta_tol ladder search to find
-    a feasible solve, then check how closely the achieved beta matches
-    target_betas. Stops at the first gamma that both solves AND tracks
-    within max_tracking_error. If no gamma achieves that, falls back to
-    the best (lowest tracking error) feasible result found.
+    Two-phase search -- much cheaper than a full beta_tol x turnover_cap x
+    gamma grid (which can be 100+ combos):
+
+    Phase 1: find the smallest feasible turnover_cap. Feasibility only
+    depends on turnover_cap -- beta_tol and gamma only rescale a soft
+    penalty in the objective and never make the LP infeasible on their
+    own -- so this is tested once per turnover_cap with a fixed probe
+    (beta_tol, gamma), not the full cross product.
+
+    Phase 2: at that turnover_cap, search gamma x beta_tol (ascending,
+    weakest tracking pull first) for the first combo that tracks
+    target_betas within max_tracking_error. Falls back to the best
+    tracking error found if none hits that bar.
+
+    Every attempt in both phases runs with the expensive per-failure
+    debug report suppressed (see _suppress_infeasible_debug) -- it's
+    meant for a single human-readable failure, not for firing on every
+    rejected combo in an automated search.
 
     Returns (res, beta_tol_used, turnover_cap_used, gamma_used).
     """
-    best = None  # (res, beta_tol, turnover_cap, gamma, err)
-    for gamma in gamma_ladder:
-        def _build(bt, tc, _gamma=gamma):
-            return build_fn(bt, tc, _gamma)
+    probe_bt = beta_tol_ladder[0]
+    probe_gamma = gamma_ladder[len(gamma_ladder) // 2]
 
-        try:
-            res, used_bt, used_tc = _solve_with_ladder(_build, beta_tol_ladder, turnover_cap_ladder)
-        except RuntimeError:
-            continue
+    feasible_tc = None
+    with _suppress_infeasible_debug():
+        for tc in turnover_cap_ladder:
+            try:
+                build_fn(probe_bt, tc, probe_gamma)
+                feasible_tc = tc
+                break
+            except RuntimeError:
+                continue
 
-        achieved = _achieved_betas_from_res(res)
-        err = _tracking_error(achieved, target_betas)
+    if feasible_tc is None:
+        raise RuntimeError(
+            f"No feasible turnover_cap found in {turnover_cap_ladder} "
+            f"(probed with beta_tol={probe_bt}, gamma={probe_gamma})."
+        )
 
-        if best is None or err < best[4]:
-            best = (res, used_bt, used_tc, gamma, err)
+    best = None  # (res, beta_tol, gamma, err)
+    with _suppress_infeasible_debug():
+        for gamma in gamma_ladder:
+            for beta_tol in beta_tol_ladder:
+                try:
+                    res = build_fn(beta_tol, feasible_tc, gamma)
+                except RuntimeError:
+                    continue
 
-        if err <= max_tracking_error:
-            return res, used_bt, used_tc, gamma
+                achieved = _achieved_betas_from_res(res)
+                err = _tracking_error(achieved, target_betas)
+
+                if best is None or err < best[3]:
+                    best = (res, beta_tol, gamma, err)
+                if err <= max_tracking_error:
+                    return res, beta_tol, feasible_tc, gamma
 
     if best is None:
-        raise RuntimeError(
-            f"No feasible solve found across gamma_ladder={gamma_ladder}, "
-            f"beta_tol_ladder={beta_tol_ladder}, turnover_cap_ladder={turnover_cap_ladder}."
-        )
-    res, used_bt, used_tc, gamma, err = best
-    return res, used_bt, used_tc, gamma
+        # feasible_tc already solved once above, so this shouldn't happen.
+        raise RuntimeError("Unexpected: feasible turnover_cap found but no (beta_tol, gamma) solved.")
+    res, beta_tol, gamma, err = best
+    return res, beta_tol, feasible_tc, gamma
+
+
+# ----------------------------------------------------------------------
+# Performance metrics
+# ----------------------------------------------------------------------
+def _rf_series_from_ff(fama_french_data: pd.DataFrame) -> pd.Series:
+    """Monthly risk-free rate as a decimal Series indexed by month-end date.
+    Auto-detects percent-scale RF. Unlike MF/SMB/HML (which run several
+    percentage points and use a >1.5 threshold elsewhere in this file), a
+    real monthly risk-free rate is well under 5% even in percent form, so
+    RF needs its own smaller threshold to detect percent-scale correctly."""
+    ff = fama_french_data.copy()
+    ff["Date"] = pd.to_datetime(ff["Date"]) + pd.offsets.MonthEnd(0)
+    rf = pd.to_numeric(ff.set_index("Date")["RF"], errors="coerce")
+    if rf.abs().median(skipna=True) > 0.05:  # e.g. 0.55 meaning 0.55%, not 55%
+        rf = rf / 100.0
+    return rf
+
+
+def compute_performance_metrics(
+    strategy_returns: pd.Series,   # monthly returns, decimal, indexed by month-end date
+    index_returns: pd.Series,      # benchmark monthly returns, same convention
+    fama_french_data: pd.DataFrame,  # needs a 'Date' and 'RF' column
+) -> dict:
+    """
+    Headline performance metrics for a monthly strategy return series:
+      - total_return, annualized_return, annualized_vol
+      - sharpe, sortino (both use the risk-free rate from fama_french_data)
+      - alpha, beta (CAPM vs index_returns, alpha annualized)
+      - win_rate (fraction of months with positive return)
+      - avg_drawdown (mean of the drawdown series, <= 0)
+    """
+    r = strategy_returns.dropna()
+    n = len(r)
+    if n == 0:
+        raise ValueError("strategy_returns is empty.")
+    years = n / 12.0
+
+    rf = _rf_series_from_ff(fama_french_data).reindex(r.index).fillna(0.0)
+
+    total_return = float((1 + r).prod() - 1)
+    annualized_return = float((1 + total_return) ** (1 / years) - 1) if years > 0 else float("nan")
+    annualized_vol = float(r.std() * np.sqrt(12))
+
+    excess = r - rf
+    ex_std = excess.std()
+    sharpe = float(excess.mean() / ex_std * np.sqrt(12)) if ex_std > 1e-12 else float("nan")
+
+    downside = excess[excess < 0]
+    dstd = downside.std() if len(downside) > 1 else float("nan")
+    sortino = float(excess.mean() / dstd * np.sqrt(12)) if dstd and dstd > 1e-12 else float("nan")
+
+    win_rate = float((r > 0).mean())
+
+    common = r.index.intersection(index_returns.dropna().index)
+    if len(common) >= 3:
+        r_ex = (r.loc[common] - rf.loc[common]).values
+        b_ex = (index_returns.loc[common] - rf.loc[common]).values
+        X = np.column_stack([np.ones(len(b_ex)), b_ex])
+        coef, *_ = np.linalg.lstsq(X, r_ex, rcond=None)
+        alpha_monthly, beta = float(coef[0]), float(coef[1])
+        alpha_annualized = (1 + alpha_monthly) ** 12 - 1
+    else:
+        alpha_annualized, beta = float("nan"), float("nan")
+
+    cum = (1 + r).cumprod()
+    peak = cum.cummax()
+    drawdown = (cum - peak) / peak
+    avg_drawdown = float(drawdown.mean())
+
+    return {
+        "total_return": total_return,
+        "annualized_return": annualized_return,
+        "annualized_vol": annualized_vol,
+        "sharpe": sharpe,
+        "sortino": sortino,
+        "alpha_annualized": alpha_annualized,
+        "beta": beta,
+        "win_rate": win_rate,
+        "avg_drawdown": avg_drawdown,
+    }
 
 
 def run_recommended_backtest(
