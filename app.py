@@ -483,6 +483,11 @@ The optimizer targets those betas automatically.
             if _excel_source is None:
                 st.error("Upload `beta_search_log.xlsx` before running.")
             else:
+                progress_status = st.empty()
+
+                def _report_progress(rb, i, total):
+                    progress_status.text(f"📅 Rebalancing {i}/{total} — currently at {rb.strftime('%Y-%m')}")
+
                 with st.spinner(f"⏳ Running {strategy_choice} backtest from {oos_start}..."):
                     try:
                         from utils import run_recommended_backtest
@@ -504,12 +509,15 @@ The optimizer targets those betas automatically.
                             R_full_prebuilt=R_full,
                             ticker_universe_prebuilt=ticker_universe,
                             threshold_mode=threshold_mode,
+                            progress_callback=_report_progress,
                         )
+                        progress_status.empty()
                         st.session_state.backtest_result = backtest_result
                         st.session_state.backtest_mode   = "recommended"
                         st.session_state.strategy_label  = strategy_choice
                         st.success(f"✅ {strategy_choice} backtest completed!")
                     except Exception as e:
+                        progress_status.empty()
                         st.error(f"❌ Backtest failed: {str(e)}")
                         st.exception(e)
 

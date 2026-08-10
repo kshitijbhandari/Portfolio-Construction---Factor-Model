@@ -1814,6 +1814,7 @@ def run_recommended_backtest(
     turnover_cap_ladder: list | None = None,        # used only when threshold_mode="dynamic"
     beta_penalty_gamma_ladder: list | None = None,  # used only when threshold_mode="dynamic"
     max_beta_tracking_error: float = DEFAULT_MAX_BETA_TRACKING_ERROR,  # used only when threshold_mode="dynamic"
+    progress_callback=None,  # optional callable(rebalance_date, index, total) called before each solve
 ) -> dict:
     """
     Backtest pulling target betas from beta_search_log.xlsx at each rebalance date.
@@ -2023,7 +2024,9 @@ def run_recommended_backtest(
     ff = fama_french_data.copy()
     ff["Date"] = pd.to_datetime(ff["Date"]).dt.to_period("M").dt.to_timestamp("M")
 
-    for rb in rebalance_dates:
+    for _rb_i, rb in enumerate(rebalance_dates, start=1):
+        if progress_callback is not None:
+            progress_callback(rb, _rb_i, len(rebalance_dates))
         tb = _get_betas(rb)
         tb_map[rb] = tb
         tickers = t_uni.get(rb) or _filter_tickers_by_history(
