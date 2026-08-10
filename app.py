@@ -197,16 +197,29 @@ with st.sidebar:
     oos_options = [str(m) for m in all_months]
 
     oos_start = st.selectbox(
-        "Out-of-Sample Start",
+        "Backtest From",
         options=oos_options,
         index=max(0, len(oos_options) - 60),
-        help="Start month for backtest",
+        help="First month of the backtest window.",
     )
 
-    oos_months = st.slider(
-        "OOS Duration (months)",
-        min_value=3, max_value=48, value=24, step=1,
+    _from_idx = oos_options.index(oos_start)
+    _to_options = oos_options[_from_idx + 2:]  # enforce a minimum 3-month window
+    if not _to_options:
+        _to_options = [oos_options[-1]]
+
+    _default_to = oos_options[min(_from_idx + 23, len(oos_options) - 1)]  # ~24-month default window
+    if _default_to not in _to_options:
+        _default_to = _to_options[-1]
+
+    oos_end = st.selectbox(
+        "Backtest To",
+        options=_to_options,
+        index=_to_options.index(_default_to),
+        help="Last month of the backtest window.",
     )
+
+    oos_months = pd.Period(oos_end, freq="M").ordinal - pd.Period(oos_start, freq="M").ordinal + 1
 
     if is_recommended:
         # Strategy dropdown
@@ -255,6 +268,20 @@ with st.sidebar:
         turnover_cap     = 0.20
         sector_constraints = None
         initial_capital  = 100_000
+
+        st.divider()
+        st.subheader("🔀 Dynamic Thresholding")
+        use_dynamic_thresholds = st.checkbox(
+            "Auto-relax beta tolerance / turnover cap / beta penalty on infeasibility",
+            value=False,
+            help=(
+                "Instead of a single fixed beta_tol, searches increasingly loose "
+                "(turnover_cap, beta_tol) combos at rising beta_penalty_gamma until "
+                "one both solves and tracks the target beta closely. Falls back to "
+                "the best tracking result found if none hits the target exactly."
+            ),
+        )
+        threshold_mode = "dynamic" if use_dynamic_thresholds else "fixed"
 
     else:
         compare_strategy_choices = []
@@ -479,6 +506,7 @@ The optimizer targets those betas automatically.
                             excel_path=_excel_source,
                             R_full_prebuilt=R_full,
                             ticker_universe_prebuilt=ticker_universe,
+                            threshold_mode=threshold_mode,
                         )
                         st.session_state.backtest_result = backtest_result
                         st.session_state.backtest_mode   = "recommended"
@@ -785,6 +813,7 @@ with tab7:
                     excel_path=_excel_source_cmp,
                     R_full_prebuilt=R_full,
                     ticker_universe_prebuilt=ticker_universe,
+                    threshold_mode=threshold_mode,
                 )
                 progress.progress(i / len(selected_compare))
 

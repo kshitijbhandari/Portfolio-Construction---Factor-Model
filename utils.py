@@ -1593,6 +1593,109 @@ def backtest_fixed_window_quarterly_rebalance_on_breach(
     }
 
 
+# ----------------------------------------------------------------------
+# Dynamic threshold search (beta_tol / turnover_cap / beta_penalty_gamma)
+# ----------------------------------------------------------------------
+DEFAULT_BETA_TOL_LADDER = [0.30, 0.50, 1.0, 2.0, 3.0, 4.0, 5.0]
+DEFAULT_TURNOVER_CAP_LADDER = [0.25, 0.30, 0.40, 0.50, 0.60, 0.70]
+DEFAULT_BETA_PENALTY_GAMMA_LADDER = [1.0, 5.0, 15.0, 40.0, 100.0]
+DEFAULT_MAX_BETA_TRACKING_ERROR = 0.15  # max |achieved - target| per factor considered "good enough"
+
+
+def _solve_with_ladder(build_fn, beta_tol_ladder, turnover_cap_ladder):
+    """
+    Try (turnover_cap, beta_tol) combos from tightest to loosest.
+    turnover_cap is the outer loop because it's the parameter that can
+    actually make the MILP infeasible (universe changes forcing a big
+    rebalance). beta_tol only rescales the soft beta-tracking penalty
+    and never affects feasibility on its own -- but we still widen it
+    in step so a run that needed a looser turnover cap doesn't also
+    silently drop beta tracking to its tightest (most expensive) setting.
+
+    build_fn(beta_tol, turnover_cap) -> res. Returns (res, beta_tol_used,
+    turnover_cap_used). Raises RuntimeError if nothing in either ladder solves.
+    """
+    last_err = None
+    for turnover_cap in turnover_cap_ladder:
+        for beta_tol in beta_tol_ladder:
+            try:
+                res = build_fn(beta_tol, turnover_cap)
+                return res, beta_tol, turnover_cap
+            except Exception as e:
+                if "infeasible" not in str(e).lower() and "infeasible" not in repr(e).lower():
+                    raise
+                last_err = e
+                continue
+    raise RuntimeError(
+        f"No feasible (beta_tol, turnover_cap) found. "
+        f"beta_tol_ladder={beta_tol_ladder}, turnover_cap_ladder={turnover_cap_ladder}. "
+        f"Last error: {last_err}"
+    )
+
+
+def _achieved_betas_from_res(res):
+    """Compute achieved portfolio beta exposure from a build_portfolio_asof_pulp result."""
+    w = res["weights"]
+    w = w / w.sum()
+    bdf = res["betas_asof"].set_index("Ticker")
+    out = {}
+    for f in ["MF", "SMB", "HML"]:
+        col = f"beta_{f}"
+        s = bdf[col].reindex(w.index).fillna(0)
+        out[f] = float((s * w).sum())
+    return out
+
+
+def _tracking_error(achieved, target):
+    return max(abs(achieved[f] - target[f]) for f in ["MF", "SMB", "HML"])
+
+
+def _solve_with_gamma_ladder(
+    build_fn,                 # build_fn(beta_tol, turnover_cap, beta_penalty_gamma) -> res
+    target_betas,
+    beta_tol_ladder,
+    turnover_cap_ladder,
+    gamma_ladder,
+    max_tracking_error=DEFAULT_MAX_BETA_TRACKING_ERROR,
+):
+    """
+    For each beta_penalty_gamma in gamma_ladder (ascending -- weakest
+    tracking pull first), run the turnover/beta_tol ladder search to find
+    a feasible solve, then check how closely the achieved beta matches
+    target_betas. Stops at the first gamma that both solves AND tracks
+    within max_tracking_error. If no gamma achieves that, falls back to
+    the best (lowest tracking error) feasible result found.
+
+    Returns (res, beta_tol_used, turnover_cap_used, gamma_used).
+    """
+    best = None  # (res, beta_tol, turnover_cap, gamma, err)
+    for gamma in gamma_ladder:
+        def _build(bt, tc, _gamma=gamma):
+            return build_fn(bt, tc, _gamma)
+
+        try:
+            res, used_bt, used_tc = _solve_with_ladder(_build, beta_tol_ladder, turnover_cap_ladder)
+        except RuntimeError:
+            continue
+
+        achieved = _achieved_betas_from_res(res)
+        err = _tracking_error(achieved, target_betas)
+
+        if best is None or err < best[4]:
+            best = (res, used_bt, used_tc, gamma, err)
+
+        if err <= max_tracking_error:
+            return res, used_bt, used_tc, gamma
+
+    if best is None:
+        raise RuntimeError(
+            f"No feasible solve found across gamma_ladder={gamma_ladder}, "
+            f"beta_tol_ladder={beta_tol_ladder}, turnover_cap_ladder={turnover_cap_ladder}."
+        )
+    res, used_bt, used_tc, gamma, err = best
+    return res, used_bt, used_tc, gamma
+
+
 def run_recommended_backtest(
     stock_returns_data: pd.DataFrame,
     fama_french_data: pd.DataFrame,
@@ -1611,6 +1714,11 @@ def run_recommended_backtest(
     excel_path=None,       # str path OR file-like object (BytesIO from st.file_uploader)
     R_full_prebuilt=None,  # pass pre-built R_full from caller to avoid recomputing
     ticker_universe_prebuilt=None,  # pass pre-built ticker_universe from caller
+    threshold_mode: str = "fixed",                 # "fixed" or "dynamic"
+    beta_tol_ladder: list | None = None,            # used only when threshold_mode="dynamic"
+    turnover_cap_ladder: list | None = None,        # used only when threshold_mode="dynamic"
+    beta_penalty_gamma_ladder: list | None = None,  # used only when threshold_mode="dynamic"
+    max_beta_tracking_error: float = DEFAULT_MAX_BETA_TRACKING_ERROR,  # used only when threshold_mode="dynamic"
 ) -> dict:
     """
     Backtest pulling target betas from beta_search_log.xlsx at each rebalance date.
@@ -1619,7 +1727,21 @@ def run_recommended_backtest(
     'mean_past_best_661' (Strategy 5 using 6,6,1 past best-beta recipe),
     or 'regime_mean' (Strategy 6 using regime_mapped + regime_beta_stats sheets).
     excel_path: file path string OR file-like object (e.g. uploaded via Streamlit)
+
+    threshold_mode="fixed" (default): original behavior -- beta_tol is relaxed
+        along a small hardcoded grid on infeasibility, turnover_cap and
+        beta_penalty_gamma stay fixed.
+    threshold_mode="dynamic": at each rebalance (after the first), search
+        beta_penalty_gamma_ladder x turnover_cap_ladder x beta_tol_ladder
+        (all ascending, tightest first) for the first combo that solves AND
+        tracks target betas within max_beta_tracking_error; falls back to
+        the best tracking error found if none hits that bar.
     """
+    if threshold_mode not in {"fixed", "dynamic"}:
+        raise ValueError("threshold_mode must be 'fixed' or 'dynamic'")
+    beta_tol_ladder = beta_tol_ladder or DEFAULT_BETA_TOL_LADDER
+    turnover_cap_ladder = turnover_cap_ladder or DEFAULT_TURNOVER_CAP_LADDER
+    beta_penalty_gamma_ladder = beta_penalty_gamma_ladder or DEFAULT_BETA_PENALTY_GAMMA_LADDER
     import os
 
     if excel_path is None:
@@ -1819,51 +1941,95 @@ def run_recommended_backtest(
                 f"(need {lookback_months} months of history). "
                 "Check your start date or lookback period."
             )
-        # Try original tolerance, then relax if HiGHS returns infeasible
-        res = None
-        last_err = None
-        if beta_source == "regime_mean":
-            tol_grid = [beta_tol, 0.50, 0.75, 1.00, 1.50, 2.00, 3.00, 5.00]
-        else:
-            # Match the notebook recommended-strategy prototypes: target betas are
-            # tracked softly, with wide bands to avoid infeasible turnover/beta mixes.
-            tol_grid = [5.00]
+        current_turnover_cap = turnover_cap if w_prev is not None else None
 
-        for tol_value in tol_grid:
-            try:
-                cur_tols = {"MF": tol_value, "SMB": tol_value, "HML": tol_value}
-                res = build_portfolio_asof_pulp(
-                    asof=rb,
-                    tickers_in_window=tickers,
+        if threshold_mode == "dynamic" and w_prev is not None:
+            # Dynamic mode: search gamma x turnover_cap x beta_tol (all ascending,
+            # tightest first) for a combo that solves AND tracks target betas well.
+            def _build(bt, tc, gamma, _rb=rb, _tickers=tickers, _tb=tb, _wprev=w_prev):
+                return build_portfolio_asof_pulp(
+                    asof=_rb,
+                    tickers_in_window=_tickers,
                     stock_returns_data=sr,
                     fama_french_data=ff,
                     K_max=K_max, w_max=w_max,
                     lookback_months=lookback_months, min_obs=lookback_months,
                     risk_aversion=risk_aversion,
-                    target_betas=tb,
-                    beta_tolerances=cur_tols,
-                    w_prev=w_prev,
-                    turnover_cap=turnover_cap if w_prev is not None else None,
+                    target_betas=_tb,
+                    beta_tolerances={"MF": bt, "SMB": bt, "HML": bt},
+                    w_prev=_wprev,
+                    turnover_cap=tc,
                     beta_target_mode="soft",
-                    beta_penalty_gamma=1.0,
+                    beta_penalty_gamma=gamma,
                     scenario_missing="drop",
                 )
-                tolerance_map[rb] = cur_tols.copy()
-                break  # success
-            except Exception as e:
-                last_err = e
-                if "infeasible" not in str(e).lower() and "infeasible" not in repr(e).lower():
-                    raise  # non-infeasibility error — don't retry
-                # infeasible: try with wider tolerance
-                continue
-        if res is None:
-            raise ValueError(
-                f"Portfolio optimization failed at {rb.date()} "
-                f"with target betas {tb} (source='{beta_source}') even after "
-                f"relaxing tolerance to ±{max(tol_grid):.2f}. "
-                f"Universe: {len(tickers)} tickers. "
-                f"Original error: {last_err}"
-            ) from last_err
+
+            try:
+                res, used_bt, used_tc, used_gamma = _solve_with_gamma_ladder(
+                    _build, tb, beta_tol_ladder, turnover_cap_ladder, beta_penalty_gamma_ladder,
+                    max_tracking_error=max_beta_tracking_error,
+                )
+            except RuntimeError as e:
+                raise ValueError(
+                    f"Portfolio optimization failed at {rb.date()} "
+                    f"with target betas {tb} (source='{beta_source}') even after "
+                    f"searching beta_tol_ladder={beta_tol_ladder}, "
+                    f"turnover_cap_ladder={turnover_cap_ladder}, "
+                    f"beta_penalty_gamma_ladder={beta_penalty_gamma_ladder}. "
+                    f"Universe: {len(tickers)} tickers."
+                ) from e
+            tolerance_map[rb] = {
+                "beta_tol": used_bt, "turnover_cap": used_tc, "beta_penalty_gamma": used_gamma,
+            }
+        else:
+            # Fixed mode (legacy behavior): try original tolerance, then relax
+            # beta_tol if HiGHS returns infeasible. turnover_cap and gamma stay fixed.
+            res = None
+            last_err = None
+            if beta_source == "regime_mean":
+                tol_grid = [beta_tol, 0.50, 0.75, 1.00, 1.50, 2.00, 3.00, 5.00]
+            else:
+                # Match the notebook recommended-strategy prototypes: target betas are
+                # tracked softly, with wide bands to avoid infeasible turnover/beta mixes.
+                tol_grid = [5.00]
+
+            for tol_value in tol_grid:
+                try:
+                    cur_tols = {"MF": tol_value, "SMB": tol_value, "HML": tol_value}
+                    res = build_portfolio_asof_pulp(
+                        asof=rb,
+                        tickers_in_window=tickers,
+                        stock_returns_data=sr,
+                        fama_french_data=ff,
+                        K_max=K_max, w_max=w_max,
+                        lookback_months=lookback_months, min_obs=lookback_months,
+                        risk_aversion=risk_aversion,
+                        target_betas=tb,
+                        beta_tolerances=cur_tols,
+                        w_prev=w_prev,
+                        turnover_cap=current_turnover_cap,
+                        beta_target_mode="soft",
+                        beta_penalty_gamma=1.0,
+                        scenario_missing="drop",
+                    )
+                    tolerance_map[rb] = {
+                        "beta_tol": tol_value, "turnover_cap": current_turnover_cap, "beta_penalty_gamma": 1.0,
+                    }
+                    break  # success
+                except Exception as e:
+                    last_err = e
+                    if "infeasible" not in str(e).lower() and "infeasible" not in repr(e).lower():
+                        raise  # non-infeasibility error — don't retry
+                    # infeasible: try with wider tolerance
+                    continue
+            if res is None:
+                raise ValueError(
+                    f"Portfolio optimization failed at {rb.date()} "
+                    f"with target betas {tb} (source='{beta_source}') even after "
+                    f"relaxing tolerance to ±{max(tol_grid):.2f}. "
+                    f"Universe: {len(tickers)} tickers. "
+                    f"Original error: {last_err}"
+                ) from last_err
 
         new_w = res["weights"]
         new_w = new_w / new_w.sum()
@@ -1928,6 +2094,7 @@ def run_recommended_backtest(
             "portfolio_value": round(port_val, 2),
             "turnover_pct": f"{turnover_frac*100:.1f}%" if turnover_frac is not None else "initial",
             "dollar_turnover": dollar_turnover if dollar_turnover is not None else "initial",
+            "thresholds_used": tolerance_map.get(rb, {}),
         }
         if beta_source == "regime_mean":
             rebalance_log[str(rb.date())]["regime"] = _get_regime(rb)
