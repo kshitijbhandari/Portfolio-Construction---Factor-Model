@@ -1047,6 +1047,74 @@ def optimize_pulp_mad_targetbetas_cardinality(
 
 import pandas as pd
 
+def precompute_portfolio_inputs(
+    asof: str | pd.Timestamp,
+    tickers_in_window: list[str],
+    stock_returns_data: pd.DataFrame,
+    fama_french_data: pd.DataFrame,
+    universe_df: pd.DataFrame | None = None,
+    year: int | None = None,
+    lookback_months: int = 60,
+    min_obs: int = 36,
+    use_t_as_last_obs: bool = False,
+) -> dict:
+    """
+    Runs the asof-dependent, target-beta-independent steps of
+    build_portfolio_asof_pulp (rolling beta estimation, factor covariance,
+    expected returns, scenario matrix) once, so a caller trying many
+    (beta_tol, turnover_cap, gamma) combos at the same asof -- e.g. a
+    threshold ladder search -- can pass the result in as
+    build_portfolio_asof_pulp(..., precomputed=this_dict) for every combo
+    instead of repeating the same rolling regression each time.
+    """
+    asof_ts = pd.to_datetime(str(asof)).to_period("M").to_timestamp("M")
+
+    betas_asof = estimate_betas_asof_nifty(
+        returns_df=stock_returns_data,
+        factors_df=fama_french_data,
+        asof=asof_ts,
+        tickers_in_window=tickers_in_window,
+        universe_df=universe_df,
+        year=year,
+        lookback_months=lookback_months,
+        min_obs=min_obs,
+        include_mom=False,
+        use_t_as_last_obs=use_t_as_last_obs
+    )
+
+    Sigma_f, lam = compute_sigma_f_and_lambda(
+        factors_df=fama_french_data,
+        asof=asof_ts,
+        lookback_months=lookback_months,
+        factor_cols=["MF", "SMB", "HML"]
+    )
+
+    mu, _Sigma_unused = build_mu_and_sigma_from_betas(
+        betas_asof=betas_asof,
+        Sigma_f=Sigma_f,
+        lam=lam,
+        factor_cols=["MF", "SMB", "HML"],
+        add_diag_jitter=1e-8
+    )
+
+    panel = stock_returns_data.copy()
+    panel["Date"] = pd.to_datetime(panel["Date"].astype(str)).dt.to_period("M").dt.to_timestamp("M")
+
+    tickers_used = betas_asof["Ticker"].unique().tolist()
+    window = panel[(panel["Date"] <= asof_ts) & (panel["Ticker"].isin(tickers_used))]
+
+    R = (window.pivot(index="Date", columns="Ticker", values="RET")
+              .sort_index()
+              .tail(lookback_months))
+
+    common = sorted(set(mu.index).intersection(R.columns))
+    mu = mu.loc[common]
+    R = R[common]
+    betas_asof = betas_asof[betas_asof["Ticker"].isin(common)].copy()
+
+    return {"betas_asof": betas_asof, "Sigma_f": Sigma_f, "lambda": lam, "mu": mu, "R": R}
+
+
 def build_portfolio_asof_pulp(
     asof: str | pd.Timestamp,
     tickers_in_window: list[str],
@@ -1073,6 +1141,14 @@ def build_portfolio_asof_pulp(
     beta_target_mode: str = "hard",
     beta_penalty_gamma: float = 1.0,
     scenario_missing: str = "fill",
+    precomputed: dict | None = None,  # optional output of precompute_portfolio_inputs(),
+                                       # skips steps 1-4 below (betas/Sigma_f/mu/R) --
+                                       # these don't depend on target_betas, tolerances,
+                                       # turnover_cap, or gamma, so a caller trying many
+                                       # combos at the same asof (e.g. a threshold ladder
+                                       # search) should compute them once and reuse them
+                                       # instead of paying for a fresh rolling-beta
+                                       # regression on every single combo.
 ) -> dict:
     """
     End-to-end portfolio build at one rebalance month 'asof' using PuLP MILP (MAD risk + target betas + max K).
@@ -1081,54 +1157,61 @@ def build_portfolio_asof_pulp(
 
     asof_ts = pd.to_datetime(str(asof)).to_period("M").to_timestamp("M")
 
-    # 1) betas at asof (your function)
-    betas_asof = estimate_betas_asof_nifty(
-        returns_df=stock_returns_data,
-        factors_df=fama_french_data,
-        asof=asof_ts,
-        tickers_in_window=tickers_in_window,
-        universe_df=universe_df,
-        year=year,
-        lookback_months=lookback_months,
-        min_obs=min_obs,
-        include_mom=False,
-        use_t_as_last_obs=use_t_as_last_obs
-    )
+    if precomputed is not None:
+        betas_asof = precomputed["betas_asof"]
+        Sigma_f = precomputed["Sigma_f"]
+        lam = precomputed["lambda"]
+        mu = precomputed["mu"]
+        R = precomputed["R"]
+    else:
+        # 1) betas at asof (your function)
+        betas_asof = estimate_betas_asof_nifty(
+            returns_df=stock_returns_data,
+            factors_df=fama_french_data,
+            asof=asof_ts,
+            tickers_in_window=tickers_in_window,
+            universe_df=universe_df,
+            year=year,
+            lookback_months=lookback_months,
+            min_obs=min_obs,
+            include_mom=False,
+            use_t_as_last_obs=use_t_as_last_obs
+        )
 
-    # 2) factor stats (Sigma_f, lambda)
-    Sigma_f, lam = compute_sigma_f_and_lambda(
-        factors_df=fama_french_data,
-        asof=asof_ts,
-        lookback_months=lookback_months,
-        factor_cols=["MF","SMB","HML"]
-    )
+        # 2) factor stats (Sigma_f, lambda)
+        Sigma_f, lam = compute_sigma_f_and_lambda(
+            factors_df=fama_french_data,
+            asof=asof_ts,
+            lookback_months=lookback_months,
+            factor_cols=["MF","SMB","HML"]
+        )
 
-    # 3) expected returns mu from betas * lambda
-    mu, _Sigma_unused = build_mu_and_sigma_from_betas(
-        betas_asof=betas_asof,
-        Sigma_f=Sigma_f,
-        lam=lam,
-        factor_cols=["MF","SMB","HML"],
-        add_diag_jitter=1e-8
-    )
+        # 3) expected returns mu from betas * lambda
+        mu, _Sigma_unused = build_mu_and_sigma_from_betas(
+            betas_asof=betas_asof,
+            Sigma_f=Sigma_f,
+            lam=lam,
+            factor_cols=["MF","SMB","HML"],
+            add_diag_jitter=1e-8
+        )
 
-    # 4) build scenario returns matrix R (MAD risk uses realized stock returns)
-    panel = stock_returns_data.copy()
-    panel["Date"] = pd.to_datetime(panel["Date"].astype(str)).dt.to_period("M").dt.to_timestamp("M")
+        # 4) build scenario returns matrix R (MAD risk uses realized stock returns)
+        panel = stock_returns_data.copy()
+        panel["Date"] = pd.to_datetime(panel["Date"].astype(str)).dt.to_period("M").dt.to_timestamp("M")
 
-    # use same universe tickers that actually have betas (avoid missing)
-    tickers_used = betas_asof["Ticker"].unique().tolist()
-    window = panel[(panel["Date"] <= asof_ts) & (panel["Ticker"].isin(tickers_used))]
+        # use same universe tickers that actually have betas (avoid missing)
+        tickers_used = betas_asof["Ticker"].unique().tolist()
+        window = panel[(panel["Date"] <= asof_ts) & (panel["Ticker"].isin(tickers_used))]
 
-    R = (window.pivot(index="Date", columns="Ticker", values="RET")
-              .sort_index()
-              .tail(lookback_months))
+        R = (window.pivot(index="Date", columns="Ticker", values="RET")
+                  .sort_index()
+                  .tail(lookback_months))
 
-    # align mu to R columns (intersection)
-    common = sorted(set(mu.index).intersection(R.columns))
-    mu = mu.loc[common]
-    R = R[common]
-    betas_asof = betas_asof[betas_asof["Ticker"].isin(common)].copy()
+        # align mu to R columns (intersection)
+        common = sorted(set(mu.index).intersection(R.columns))
+        mu = mu.loc[common]
+        R = R[common]
+        betas_asof = betas_asof[betas_asof["Ticker"].isin(common)].copy()
 
     # 5) default target betas if not passed (optional)
     if target_betas is None:
@@ -2044,7 +2127,19 @@ def run_recommended_backtest(
         if threshold_mode == "dynamic" and w_prev is not None:
             # Dynamic mode: search gamma x turnover_cap x beta_tol (all ascending,
             # tightest first) for a combo that solves AND tracks target betas well.
-            def _build(bt, tc, gamma, _rb=rb, _tickers=tickers, _tb=tb, _wprev=w_prev):
+            # Beta estimation / factor covariance / mu / R don't depend on any of
+            # those, so compute them once per rebalance and reuse across every
+            # combo instead of repeating the same rolling regression up to ~40
+            # times (this was previously the dominant cost of dynamic mode).
+            _precomp = precompute_portfolio_inputs(
+                asof=rb,
+                tickers_in_window=tickers,
+                stock_returns_data=sr,
+                fama_french_data=ff,
+                lookback_months=lookback_months, min_obs=lookback_months,
+            )
+
+            def _build(bt, tc, gamma, _rb=rb, _tickers=tickers, _tb=tb, _wprev=w_prev, _pre=_precomp):
                 return build_portfolio_asof_pulp(
                     asof=_rb,
                     tickers_in_window=_tickers,
@@ -2060,6 +2155,7 @@ def run_recommended_backtest(
                     beta_target_mode="soft",
                     beta_penalty_gamma=gamma,
                     scenario_missing="drop",
+                    precomputed=_pre,
                 )
 
             try:
@@ -2091,6 +2187,14 @@ def run_recommended_backtest(
                 # tracked softly, with wide bands to avoid infeasible turnover/beta mixes.
                 tol_grid = [5.00]
 
+            _precomp = precompute_portfolio_inputs(
+                asof=rb,
+                tickers_in_window=tickers,
+                stock_returns_data=sr,
+                fama_french_data=ff,
+                lookback_months=lookback_months, min_obs=lookback_months,
+            )
+
             for tol_value in tol_grid:
                 try:
                     cur_tols = {"MF": tol_value, "SMB": tol_value, "HML": tol_value}
@@ -2109,6 +2213,7 @@ def run_recommended_backtest(
                         beta_target_mode="soft",
                         beta_penalty_gamma=1.0,
                         scenario_missing="drop",
+                        precomputed=_precomp,
                     )
                     tolerance_map[rb] = {
                         "beta_tol": tol_value, "turnover_cap": current_turnover_cap, "beta_penalty_gamma": 1.0,
